@@ -101,10 +101,28 @@ std::vector<Answer> answers(const std::vector<tgw::Outgoing> &out) {
   return found;
 }
 
+// Three protocol slots, so these tests can queue several protocol requests per key; the
+// gateway reserves one by default (tested below).
 struct Fixture {
+  request_queues_type queues;
+  tgw::Engine e{queues, {READ_KEY, WRITE_KEY}, 3, tgw::Engine::DEFAULT_ANSWER_TIMEOUT_US, 3};
+};
+
+struct OneSlot {
   request_queues_type queues;
   tgw::Engine e{queues, {READ_KEY, WRITE_KEY}, 3};
 };
+
+void plain(tgw::Engine &e, uint16_t reg) {
+  CHECK(e.submit_plain(0x20, 0x69, read_request(reg), 0));
+}
+
+std::vector<uint16_t> sent_order(tgw::Engine &e) {
+  std::vector<uint16_t> order;
+  while (const QueuedRequest *sent = e.reply_for(0x20, 0x69, 1))
+    order.push_back(sent->data[3] | (sent->data[4] << 8));
+  return order;
+}
 
 // The pump sends a token; the engine answers; the pump closes with `trailer` (-1: none).
 std::optional<RequestMeta> token_exchange(tgw::Engine &e, const std::vector<uint8_t> &token, uint64_t now_us,
@@ -163,33 +181,43 @@ TEST(engine_invalid_requests_are_dropped_with_a_reason) {
                            {A, 3, Stage::DROPPED, static_cast<uint16_t>(DropReason::UNKNOWN_KEY)}}));
 }
 
-TEST(engine_a_full_queue_refuses_protocol_requests) {
-  Fixture f;
-  for (uint32_t i = 0; i < 4; i++)
-    f.e.submit(A, read(i + 1, 40000 + i), 0);
-  auto out = fates(f.e.take_outbox());
-  CHECK((out.back() == Fate{A, 4, Stage::DROPPED, static_cast<uint16_t>(DropReason::QUEUE_FULL)}));
+TEST(engine_one_slot_is_reserved_for_protocol_requests) {
+  OneSlot f;
+  f.e.submit(A, read(1), 0);
+  f.e.submit(B, read(2, 40004), 0);
+  CHECK((fates(f.e.take_outbox()) ==
+         std::vector<Fate>{{A, 1, Stage::QUEUED, 0},
+                           {B, 2, Stage::DROPPED, static_cast<uint16_t>(DropReason::QUEUE_FULL)}}));
   CHECK(f.e.stats.drops[static_cast<size_t>(DropReason::QUEUE_FULL)] == 1);
 }
 
-TEST(engine_a_plain_request_evicts_the_oldest_even_a_protocol_one) {
-  Fixture f;
-  for (uint32_t i = 0; i < 3; i++)
-    f.e.submit(A, read(i + 1, 40000 + i), 0);
-  f.e.take_outbox();
-  CHECK(f.e.submit_plain(0x20, 0x69, read_request(40010), 0));
-  CHECK((fates(f.e.take_outbox()) ==
-         std::vector<Fate>{{A, 1, Stage::DROPPED, static_cast<uint16_t>(DropReason::EVICTED)}}));
-  CHECK(f.e.stats.evictions == 1);
+TEST(engine_a_protocol_request_gets_in_when_plain_requests_fill_theirs) {
+  OneSlot f;
+  for (uint16_t reg : {40001, 40002, 40003})
+    plain(f.e, reg);
+  f.e.submit(A, read(1), 0);
+  CHECK((fates(f.e.take_outbox()) == std::vector<Fate>{{A, 1, Stage::QUEUED, 3}}));
+  CHECK(f.e.depths()[READ_KEY] == 4);
+}
+
+TEST(engine_plain_requests_push_out_only_plain_ones) {
+  OneSlot f;
+  plain(f.e, 40001);
+  f.e.submit(A, read(1), 0);
+  for (uint16_t reg : {40002, 40003, 40004})
+    plain(f.e, reg);
+  CHECK((fates(f.e.take_outbox()) == std::vector<Fate>{{A, 1, Stage::QUEUED, 1}}));
+  CHECK(f.e.stats.evictions == 0);
+  // The oldest plain request went; the rest go in the order they arrived.
+  CHECK((sent_order(f.e) == std::vector<uint16_t>{47134, 40002, 40003, 40004}));
 }
 
 TEST(engine_priority_goes_to_the_front) {
-  Fixture f;
-  f.e.submit(A, read(1), 0);
+  OneSlot f;
+  plain(f.e, 40001);
   f.e.submit(A, read(2, 40004, tgw::request_flag::PRIORITY), 0);
-  f.e.take_outbox();
-  const QueuedRequest *sent = f.e.reply_for(0x20, 0x69, 1);
-  CHECK(sent != nullptr && sent->data == read_request(40004));
+  CHECK((fates(f.e.take_outbox()) == std::vector<Fate>{{A, 2, Stage::QUEUED, 0}}));
+  CHECK((sent_order(f.e) == std::vector<uint16_t>{40004, 40001}));
 }
 
 // --- on the bus ---------------------------------------------------------------------------

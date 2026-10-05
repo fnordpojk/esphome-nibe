@@ -19,9 +19,11 @@
 // collect in an outbox. It works on the component's own request queues, so plain NibeGW
 // and protocol requests share them.
 //
-// - A full queue drops its oldest entry for a plain request, as before; a protocol request
-//   pushed out that way is reported as EVICTED. A protocol request is refused when the
-//   queue is full.
+// - Requests go out in the order they arrived. Plain requests behave as before: at most
+//   `queue_cap` of them, and a new one drops the oldest plain entry. On top of those,
+//   `protocol_slots` entries are reserved for protocol requests, which are refused when
+//   they are taken. Neither kind pushes the other out, so a busy plain client doesn't
+//   keep protocol requests waiting for a slot.
 // - Reads are paired with the pump's 0x6A answers first in, first out per register: the
 //   read requests the pump took, from every client and plain ones included, wait in the
 //   order it took them, and an answer belongs to the oldest. A read-back after a write
@@ -92,12 +94,19 @@ class Engine {
  public:
   static constexpr uint32_t DEFAULT_ANSWER_TIMEOUT_US = 5000000;
 
-  // `keys` are the (address, token) pairs a protocol request may be queued for.
+  static constexpr size_t DEFAULT_PROTOCOL_SLOTS = 1;
+
+  // `keys` are the (address, token) pairs a protocol request may be queued for;
+  // `queue_cap` is the plain requests per queue.
   Engine(request_queues_type &queues, std::set<request_key_type> keys, size_t queue_cap,
-         uint32_t default_answer_timeout_us = DEFAULT_ANSWER_TIMEOUT_US);
+         uint32_t default_answer_timeout_us = DEFAULT_ANSWER_TIMEOUT_US,
+         size_t protocol_slots = DEFAULT_PROTOCOL_SLOTS);
 
   size_t queue_cap() const {
     return queue_cap_;
+  }
+  size_t protocol_slots() const {
+    return protocol_slots_;
   }
   const std::set<request_key_type> &keys() const {
     return keys_;
@@ -146,6 +155,7 @@ class Engine {
   std::set<request_key_type> keys_;
   size_t queue_cap_;
   uint32_t default_answer_timeout_us_;
+  size_t protocol_slots_;
   std::optional<QueuedRequest> replying_;
   uint64_t replying_sent_us_{0};
   std::map<uint16_t, std::deque<Taken>> reads_;  // per register, the reads the pump took, oldest first

@@ -145,6 +145,7 @@ TEST(control_hello_gets_a_welcome) {
   CHECK(opt(w, Tag::BOOT_ID) == 0xDEADBEEF);
   CHECK(opt(w, Tag::LEASE_S) == 60);
   CHECK(tgw::find_option(w.options, Tag::IMPL)->as_text() == "esphome-nibe");
+  CHECK(opt(w, Tag::QUEUE_CAP) == 3 && opt(w, Tag::PROTOCOL_SLOTS) == 1);
   CHECK(test::hex(tgw::find_option(w.options, Tag::PLAIN_PORTS)->value) == "0f271027");
   CHECK(opt(w, Tag::ACK_ADDRESS) == 0x20);
   CHECK(opt(w, Tag::FEATURES) & tgw::feature::FATE);

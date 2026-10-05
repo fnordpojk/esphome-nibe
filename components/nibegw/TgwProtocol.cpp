@@ -67,6 +67,7 @@ constexpr Spec SPECS[] = {
     fixed(Tag::UPTIME_S, 4),
     fixed(Tag::FEATURES, 4),
     fixed(Tag::QUEUE_CAP, 1),
+    fixed(Tag::PROTOCOL_SLOTS, 1),
     fixed(Tag::MAX_CLIENTS, 1),
     fixed(Tag::ANSWER_TIMEOUT_MS, 2),
     fixed(Tag::TIMESTAMP_LAG_MAX_US, 4),

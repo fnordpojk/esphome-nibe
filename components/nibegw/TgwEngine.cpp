@@ -66,11 +66,12 @@ Exchange make_exchange(const uint8_t *data, size_t len, bool acknowledged, Excha
 }
 
 Engine::Engine(request_queues_type &queues, std::set<request_key_type> keys, size_t queue_cap,
-               uint32_t default_answer_timeout_us)
+               uint32_t default_answer_timeout_us, size_t protocol_slots)
     : queues_(queues),
       keys_(std::move(keys)),
       queue_cap_(queue_cap),
-      default_answer_timeout_us_(default_answer_timeout_us) {
+      default_answer_timeout_us_(default_answer_timeout_us),
+      protocol_slots_(protocol_slots) {
   keys_.insert(READ_KEY);
   keys_.insert(WRITE_KEY);
 }
@@ -91,8 +92,12 @@ void Engine::submit(const void *client, const Message &request, uint64_t now_us)
   meta.answer_timeout_us =
       request.answer_timeout_ms ? uint32_t(request.answer_timeout_ms) * 1000 : default_answer_timeout_us_;
   auto reason = invalid_(request.frame, key);
-  if (!reason && queue_(key).size() >= queue_cap_)
-    reason = DropReason::QUEUE_FULL;
+  if (!reason) {
+    const auto &queue = queue_(key);
+    auto taken = std::count_if(queue.begin(), queue.end(), [](const QueuedRequest &q) { return q.meta.owner; });
+    if (size_t(taken) >= protocol_slots_)
+      reason = DropReason::QUEUE_FULL;
+  }
   if (reason) {
     drop_(meta, *reason, now_us);
     return;
@@ -113,14 +118,9 @@ bool Engine::submit_plain(uint16_t address, uint8_t token, request_data_type fra
   if (invalid_(frame, key))
     return false;
   auto &queue = queue_(key);
-  if (queue.size() >= queue_cap_) {
-    QueuedRequest oldest = std::move(queue.front());
-    queue.pop_front();
-    if (oldest.meta.owner != nullptr) {
-      stats.evictions++;
-      drop_(oldest.meta, DropReason::EVICTED, now_us);
-    }
-  }
+  auto plain = [](const QueuedRequest &q) { return q.meta.owner == nullptr; };
+  if (size_t(std::count_if(queue.begin(), queue.end(), plain)) >= queue_cap_)
+    queue.erase(std::find_if(queue.begin(), queue.end(), plain));
   RequestMeta meta;
   meta.answer_timeout_us = default_answer_timeout_us_;
   queue.push_back(QueuedRequest{std::move(frame), meta});

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-// The Thermaestro gateway protocol (thermaestro-gw), registry revision 1: the datagram codec.
+// The Thermaestro gateway protocol (thermaestro-gw), registry revision 2: the datagram codec.
 //
 // One message per UDP datagram: a 20-byte header, a fixed core per message type, then
 // options as tag/length/value. An authenticated message ends with a sequence number and a
@@ -19,7 +19,7 @@ namespace nibegw {
 namespace tgw {
 
 static constexpr uint8_t VERSION_MAJOR = 0;  // 0 while the protocol is a draft
-static constexpr uint8_t REGISTRY_REVISION = 1;
+static constexpr uint8_t REGISTRY_REVISION = 2;
 static constexpr size_t MAX_DATAGRAM = 512;
 static constexpr size_t HEADER_SIZE = 20;
 static constexpr size_t MAC_LEN = 16;
@@ -122,6 +122,7 @@ enum class Tag : uint16_t {
   TIMESTAMP_LAG_MAX_US = 0x0109,
   PLAIN_PORTS = 0x010A,
   ACK_ADDRESS = 0x010B,
+  PROTOCOL_SLOTS = 0x010C,
   ERR_TAG = 0x0200,
   ERR_DETAIL = 0x0201,
   BUS_STATE = 0x0301,

@@ -186,6 +186,7 @@ void Control::hello_(const Decoded &d, const uint8_t *data, size_t len, const Pe
   o.push_back(Option::text(Tag::IMPL_VERSION, s.impl_version));
   o.push_back(Option::u32(Tag::UPTIME_S, uptime_s_(now_us)));
   o.push_back(Option::u8(Tag::QUEUE_CAP, engine_.queue_cap()));
+  o.push_back(Option::u8(Tag::PROTOCOL_SLOTS, engine_.protocol_slots()));
   o.push_back(Option::u8(Tag::MAX_CLIENTS, s.max_clients));
   o.push_back(Option::u16(Tag::ANSWER_TIMEOUT_MS, s.answer_timeout_ms));
   o.push_back(Option::u32(Tag::TIMESTAMP_LAG_MAX_US, s.timestamp_lag_max_us));
