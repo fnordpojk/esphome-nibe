@@ -105,7 +105,7 @@ int NibeGwComponent::callback_msg_token_received(uint16_t address, uint8_t comma
     if (it != requests_.end()) {
       auto &queue = it->second;
       if (!queue.empty()) {
-        auto len = copy_request(queue.front(), data);
+        auto len = copy_request(queue.front().data, data);
         queue.pop_front();
         ESP_LOGD(TAG, "Response to address: 0x%x token: 0x%x bytes: %d", std::get<0>(key), std::get<1>(key), len);
         return len;

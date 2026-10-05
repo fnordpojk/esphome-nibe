@@ -18,13 +18,13 @@
 #include "esphome/components/socket/socket.h"
 
 #include "NibeGw.h"
+#include "NibeGwRequest.h"
 #include "NibeGwSockAddress.h"
 
 namespace esphome {
 namespace nibegw {
 
 using request_key_type = std::tuple<uint16_t, uint8_t>;
-using request_data_type = std::vector<uint8_t>;
 using request_provider_type = std::function<request_data_type(void)>;
 using message_listener_type = std::function<void(const request_data_type &)>;
 
@@ -51,7 +51,7 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
   std::vector<socket_address> udp_sources_;
   std::vector<socket_address> udp_targets_static_;
   std::map<socket_address, uint32_t> udp_targets_;
-  std::map<request_key_type, std::deque<request_data_type>> requests_;
+  std::map<request_key_type, std::deque<QueuedRequest>> requests_;
   std::map<request_key_type, request_provider_type> requests_provider_;
   std::map<request_key_type, request_socket_type> requests_sockets_;
   std::map<request_key_type, std::vector<message_listener_type>> message_listeners_;
@@ -93,32 +93,39 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
     message_listeners_[request_key_type(address, token)].push_back(std::move(listener));
   }
 
-  void add_queued_request(int address, int token, request_data_type request) {
+  void add_queued_request(int address, int token, request_data_type request, RequestMeta meta = {}) {
     auto &queue = requests_[request_key_type(address, token)];
     if (queue.size() >= REQUESTS_QUEUE_MAX) {
       ESP_LOGV(TAG, "Request queue full for 0x%x:0x%x, dropping oldest", address, token);
       queue.pop_front();
     }
-    queue.push_back(std::move(request));
+    queue.push_back(QueuedRequest{std::move(request), meta});
   }
 
   // Priority request: inserted at front of queue (for write-verify reads)
-  void add_priority_request(int address, int token, request_data_type request) {
+  void add_priority_request(int address, int token, request_data_type request, RequestMeta meta = {}) {
     auto &queue = requests_[request_key_type(address, token)];
     if (queue.size() >= REQUESTS_QUEUE_MAX) {
       ESP_LOGV(TAG, "Request queue full for 0x%x:0x%x, dropping oldest", address, token);
       queue.pop_back();  // drop newest (least important) to make room
     }
-    queue.push_front(std::move(request));
+    queue.push_front(QueuedRequest{std::move(request), meta});
   }
 
-  const std::deque<request_data_type> &get_request_queue(int address, int token) const {
-    static const std::deque<request_data_type> empty;
+  // The bytes of the queued requests, next first.
+  std::deque<request_data_type> get_request_queue(int address, int token) const {
+    std::deque<request_data_type> frames;
     auto it = requests_.find(request_key_type(address, token));
-    return (it != requests_.end()) ? it->second : empty;
+    if (it != requests_.end()) {
+      for (const auto &queued : it->second)
+        frames.push_back(queued.data);
+    }
+    return frames;
   }
 
-  static constexpr size_t get_queue_capacity() { return REQUESTS_QUEUE_MAX; }
+  static constexpr size_t get_queue_capacity() {
+    return REQUESTS_QUEUE_MAX;
+  }
 
   void add_acknowledge(int address) {
     gw_->setAcknowledge(address, true);
