@@ -262,7 +262,7 @@ void NibeGwClimate::setup() {
     this->publish_state();
   });
 
-  this->gw_->gw().setAcknowledge(address_, true);
+  this->gw_->add_acknowledge(address_);
 }
 
 void NibeGwClimate::control(const climate::ClimateCall &call) {

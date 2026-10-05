@@ -1,11 +1,15 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
+#include <map>
+#include <tuple>
 #include <vector>
 
 namespace esphome {
 namespace nibegw {
 
+using request_key_type = std::tuple<uint16_t, uint8_t>;  // address, token
 using request_data_type = std::vector<uint8_t>;
 
 // What is known about a queued request besides its bytes. A plain NibeGW request,
@@ -22,6 +26,8 @@ struct QueuedRequest {
   request_data_type data;
   RequestMeta meta;
 };
+
+using request_queues_type = std::map<request_key_type, std::deque<QueuedRequest>>;
 
 }  // namespace nibegw
 }  // namespace esphome

@@ -38,6 +38,10 @@ CONF_TOKEN = "token"
 CONF_COMMAND = "command"
 CONF_DATA = "data"
 CONF_CONSTANTS = "constants"
+CONF_THERMAESTRO = "thermaestro"
+CONF_PSK = "psk"
+CONF_MAX_CLIENTS = "max_clients"
+CONF_ANSWER_TIMEOUT = "answer_timeout"
 
 
 class Addresses(IntEnum):
@@ -76,8 +80,29 @@ def _consume_nibegw_sockets(config: ConfigType) -> ConfigType:
     # MQTT needs 1 socket for the broker connection
     udp = config[CONF_UDP]
     socket_count = len(udp[CONF_PORTS])
+    if CONF_THERMAESTRO in config:
+        socket_count += 1
     socket.consume_sockets(socket_count, "nibegw")(config)
     return config
+
+
+def port_or_off(value):
+    """A UDP port, or `false` to turn it off."""
+    if value is False:
+        return 0
+    return cv.port(value)
+
+
+def psk_key(value):
+    """The control port's pre-shared key: 32 bytes as 64 hex digits."""
+    value = cv.string_strict(value).strip().lower()
+    try:
+        key = bytes.fromhex(value)
+    except ValueError:
+        raise cv.Invalid("the key must be 64 hex digits") from None
+    if len(key) != 32:
+        raise cv.Invalid("the key must be 32 bytes, as 64 hex digits")
+    return value
 
 
 def _upgrade_ports(config: ConfigType) -> ConfigType:
@@ -135,10 +160,25 @@ PORTS_SCHEMA = cv.Schema(
 UDP_SCHEMA = cv.Schema(
     {
         cv.Optional(CONF_TARGET, []): cv.ensure_list(TARGET_SCHEMA),
-        cv.Optional(CONF_READ_PORT, default=9999): cv.port,
-        cv.Optional(CONF_WRITE_PORT, default=10000): cv.port,
+        cv.Optional(CONF_READ_PORT, default=9999): port_or_off,
+        cv.Optional(CONF_WRITE_PORT, default=10000): port_or_off,
         cv.Optional(CONF_SOURCE, []): cv.ensure_list(cv.ipv4address),
         cv.Optional(CONF_PORTS, []): cv.ensure_list(PORTS_SCHEMA),
+    }
+)
+
+# The Thermaestro gateway protocol on its own UDP port: request ids with fate reports,
+# answers paired with their requests, gateway timestamps, subscriptions and health.
+# Specification: https://github.com/fnordpojk/thermaestro/blob/main/docs/gateway-protocol.md
+THERMAESTRO_SCHEMA = cv.Schema(
+    {
+        cv.Optional(CONF_PORT, default=10090): cv.port,
+        cv.Optional(CONF_PSK): cv.All(cv.only_on_esp32, psk_key),
+        cv.Optional(CONF_MAX_CLIENTS, default=4): cv.int_range(min=1, max=8),
+        cv.Optional(CONF_ANSWER_TIMEOUT, default="5s"): cv.All(
+            cv.positive_time_period_milliseconds,
+            cv.Range(max=cv.TimePeriod(milliseconds=65535)),
+        ),
     }
 )
 
@@ -152,6 +192,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Required(CONF_UDP): UDP_SCHEMA,
             cv.Optional(CONF_DIR_PIN): pins.gpio_output_pin_schema,
             cv.Optional(CONF_CONSTANTS, default=[]): cv.ensure_list(CONSTANTS_SCHEMA),
+            cv.Optional(CONF_THERMAESTRO): THERMAESTRO_SCHEMA,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -195,6 +236,18 @@ async def to_code(config):
     if config[CONF_ACKNOWLEDGE]:
         for address in config[CONF_ACKNOWLEDGE]:
             cg.add(var.add_acknowledge(address))
+
+    if thermaestro := config.get(CONF_THERMAESTRO):
+        cg.add_define("USE_NIBEGW_THERMAESTRO")
+        cg.add(
+            var.set_thermaestro(
+                thermaestro[CONF_PORT],
+                thermaestro[CONF_MAX_CLIENTS],
+                thermaestro[CONF_ANSWER_TIMEOUT].total_milliseconds,
+            )
+        )
+        if psk := thermaestro.get(CONF_PSK):
+            cg.add(var.set_thermaestro_psk(list(bytes.fromhex(psk))))
 
     def xor8(data: bytes) -> int:
         chksum = reduce(xor, data)

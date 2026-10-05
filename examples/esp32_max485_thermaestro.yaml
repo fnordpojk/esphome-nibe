@@ -1,0 +1,73 @@
+esphome:
+  name: nibegw
+  comment: Nibegw with the Thermaestro gateway protocol
+
+esp32:
+  board: lolin_d32
+# Example is for a LolinD32 Board, use your own from here: https://esphome.io/components/esp32.html
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+
+  ap:
+    ssid: "ESP D32 Nibe Proxy AP"
+    password: !secret ap_password
+
+external_components:
+  - source: github://elupus/esphome-nibe
+
+uart:
+  rx_pin: GPIO16
+  tx_pin: GPIO17
+  baud_rate: 9600
+
+nibegw:
+  udp:
+    source:
+      - 192.168.255.254
+
+    # The plain write port can be turned off, so that every write to the pump needs
+    # the key below. Plain reads keep working.
+    write_port: false
+
+  acknowledge:
+    - MODBUS40
+
+  constants:
+    - address: MODBUS40
+      token: ACCESSORY
+      data: [
+            0x0A, # MODBUS version low
+            0x00, # MODBUS version high
+            0x01, # MODBUS address?
+      ]
+
+  # The Thermaestro gateway protocol on its own UDP port, beside the plain NibeGW ports:
+  # each request gets an id and fate reports (queued, sent, ACKed by the pump, or
+  # dropped and why), the pump's answer comes back paired with it, events carry the
+  # gateway's timestamps, and clients can subscribe to frames and health.
+  thermaestro:
+    port: 10090
+    # Optional: with a key, every message on the control port must be signed with it.
+    # 32 random bytes as 64 hex digits.
+    psk: !secret thermaestro_psk
+    max_clients: 4
+    answer_timeout: 5s
+
+button:
+- platform: restart
+  name: Nibegw Restart
+- platform: safe_mode
+  name: Nibegw Safe Mode Boot

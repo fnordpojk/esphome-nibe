@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 
+#include "esphome/core/defines.h"
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/log.h"
@@ -20,11 +21,14 @@
 #include "NibeGw.h"
 #include "NibeGwRequest.h"
 #include "NibeGwSockAddress.h"
+#ifdef USE_NIBEGW_THERMAESTRO
+#include "TgwControl.h"
+#include "TgwEngine.h"
+#endif
 
 namespace esphome {
 namespace nibegw {
 
-using request_key_type = std::tuple<uint16_t, uint8_t>;
 using request_provider_type = std::function<request_data_type(void)>;
 using message_listener_type = std::function<void(const request_data_type &)>;
 
@@ -51,13 +55,40 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
   std::vector<socket_address> udp_sources_;
   std::vector<socket_address> udp_targets_static_;
   std::map<socket_address, uint32_t> udp_targets_;
-  std::map<request_key_type, std::deque<QueuedRequest>> requests_;
+  request_queues_type requests_;
   std::map<request_key_type, request_provider_type> requests_provider_;
   std::map<request_key_type, request_socket_type> requests_sockets_;
   std::map<request_key_type, std::vector<message_listener_type>> message_listeners_;
   HighFrequencyLoopRequester high_freq_;
 
   NibeGw *gw_;
+  std::set<uint16_t> acknowledged_;
+
+#ifdef USE_NIBEGW_THERMAESTRO
+  // The Thermaestro gateway protocol on its control port, when configured.
+  struct Thermaestro {
+    int port{0};
+    tgw::ControlSettings settings;
+    socket_ptr_type socket;
+    std::unique_ptr<tgw::Engine> engine;
+    std::unique_ptr<tgw::Control> control;
+    tgw::BusStats bus;
+    tgw::Exchange::Reply reply{tgw::Exchange::Reply::NONE};  // what the last token got
+    size_t reply_len{0};
+    uint64_t reply_us{0};
+    uint64_t last_loop_us{0};
+    uint64_t last_tick_us{0};
+  };
+  std::unique_ptr<Thermaestro> tgw_;
+  uint32_t last_micros_{0};
+  uint64_t micros_high_{0};
+
+  uint64_t now_us_();
+  void setup_thermaestro_();
+  void run_thermaestro_();
+  void thermaestro_exchange_(const uint8_t *data, int len);
+  void send_thermaestro_(const std::vector<tgw::Datagram> &datagrams);
+#endif
 
   void callback_msg_received(const uint8_t *data, int len);
   int callback_msg_token_received(uint16_t address, uint8_t command, uint8_t *data);
@@ -128,8 +159,27 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
   }
 
   void add_acknowledge(int address) {
+    acknowledged_.insert(address);
     gw_->setAcknowledge(address, true);
   }
+
+#ifdef USE_NIBEGW_THERMAESTRO
+  // Serve the Thermaestro gateway protocol on `port`.
+  void set_thermaestro(int port, int max_clients, int answer_timeout_ms) {
+    tgw_ = std::make_unique<Thermaestro>();
+    tgw_->port = port;
+    tgw_->settings.max_clients = max_clients;
+    tgw_->settings.answer_timeout_ms = answer_timeout_ms;
+  }
+
+  // Require authentication with this pre-shared key on the control port.
+  void set_thermaestro_psk(const std::vector<uint8_t> &psk) {
+    if (tgw_ && psk.size() == tgw::KEY_LEN) {
+      tgw_->settings.has_psk = true;
+      std::copy(psk.begin(), psk.end(), tgw_->settings.psk);
+    }
+  }
+#endif
 
   NibeGw &gw() {
     return *gw_;

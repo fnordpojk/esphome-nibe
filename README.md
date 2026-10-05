@@ -181,6 +181,38 @@ sensor:
   
 ```
 
+## The Thermaestro gateway protocol (optional)
+
+Plain NibeGW says nothing about what became of a request: whether it was queued, dropped
+from a full queue, sent, or ACKed by the pump, and which `0x6A`/`0x6C` answers which request.
+The optional `thermaestro` block adds a second protocol on its own UDP port, beside the plain
+ports, which stay exactly as they are:
+
+- each request has an id, and its fate is reported (queued, sent, ACK/NAK from the pump, or
+  dropped with a reason);
+- the pump's answer comes back with the request's id; read answers are paired with requests
+  first in, first out per register, so a read-back after a write never gets an older answer;
+- every event carries the gateway's timestamp;
+- clients can subscribe to all frames or their own, and to health counters (bus silence,
+  CRC errors, NAKs, queue depths, the longest loop stall);
+- with a pre-shared key, every message is authenticated.
+
+```yaml
+nibegw:
+  udp:
+    # Optional: turn the plain write port off, so writes need the key.
+    write_port: false
+  thermaestro:
+    port: 10090
+    psk: !secret thermaestro_psk  # optional; 64 hex digits
+    max_clients: 4
+    answer_timeout: 5s
+```
+
+The specification is [Thermaestro's gateway protocol](https://github.com/fnordpojk/thermaestro/blob/main/docs/gateway-protocol.md). The codec, request bookkeeping and sessions are platform-free
+and tested on a host against the protocol's shared byte-sequence test vectors:
+`make -C tests`.
+
 ## Parsing
 
 Currently no actual parsing of the payload is performed on the ESPHome device, this must be handled by external application.
