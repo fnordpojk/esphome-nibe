@@ -65,6 +65,14 @@ std::string differences(const tgw::Message &a, const tgw::Message &b) {
   field("t_complete_us", a.t_complete_us, b.t_complete_us);
   field("t_reply_us", a.t_reply_us, b.t_reply_us);
   field("code", a.code, b.code);
+  field("entry", a.entry, b.entry);
+  field("width", a.width, b.width);
+  field("reg", a.reg, b.reg);
+  field("expected", a.expected, b.expected);
+  field("result", a.result, b.result);
+  field("outcome", a.outcome, b.outcome);
+  field("read", a.read, b.read);
+  field("fired_us", a.fired_us, b.fired_us);
   if (a.frame != b.frame)
     out += "frame " + test::hex(a.frame) + " != " + test::hex(b.frame) + "; ";
   if (a.options.size() != b.options.size()) {
@@ -81,8 +89,8 @@ std::string differences(const tgw::Message &a, const tgw::Message &b) {
 }  // namespace
 
 TEST(the_vectors_are_all_there) {
-  CHECK(std::size(MESSAGE_VECTORS) == 18);
-  CHECK(std::size(INVALID_VECTORS) == 14);
+  CHECK(std::size(MESSAGE_VECTORS) == 27);
+  CHECK(std::size(INVALID_VECTORS) == 16);
   CHECK(std::size(SIGNED_VECTORS) == 3);
 }
 

@@ -100,6 +100,7 @@ constexpr Spec SPECS[] = {
     fixed(Tag::REPLAYS_REJECTED, 4),
     fixed(Tag::WIFI_RSSI, 1),
     fixed(Tag::FREE_HEAP, 4),
+    fixed(Tag::DEADMAN, 5),
 };
 
 const Spec *spec_for(uint16_t number) {
@@ -245,9 +246,14 @@ bool known_type(uint8_t type) {
     case MessageType::SUBSCRIBE:
     case MessageType::REQUEST:
     case MessageType::CANCEL:
+    case MessageType::ARM:
+    case MessageType::DISARM:
+    case MessageType::ACK_FIRED:
     case MessageType::WELCOME:
     case MessageType::FATE:
     case MessageType::ANSWER:
+    case MessageType::ARMED:
+    case MessageType::FIRED:
     case MessageType::FRAME:
     case MessageType::HEALTH:
     case MessageType::ERROR:
@@ -306,6 +312,36 @@ bool parse_core(Body &b, Decoded &r) {
       if (!b.fixed(2, &at))
         return false;
       m.code = get_le(at, 2);
+      return true;
+    case MessageType::ARM:
+      if (!b.fixed(9, &at))
+        return false;
+      m.entry = at[0];
+      m.width = at[1];
+      m.reg = get_le(at + 2, 2);
+      m.expected = get_le(at + 4, 4);
+      return b.counted(at[8], &m.frame);
+    case MessageType::DISARM:
+    case MessageType::ACK_FIRED:
+      if (!b.fixed(1, &at))
+        return false;
+      m.entry = at[0];
+      return true;
+    case MessageType::ARMED:
+      if (!b.fixed(4, &at))
+        return false;
+      m.entry = at[0];
+      m.result = at[1];
+      m.detail = get_le(at + 2, 2);
+      return true;
+    case MessageType::FIRED:
+      if (!b.fixed(16, &at))
+        return false;
+      m.entry = at[0];
+      m.outcome = at[1];
+      m.reg = get_le(at + 2, 2);
+      m.read = get_le(at + 4, 4);
+      m.fired_us = get_le(at + 8, 8);
       return true;
     case MessageType::KEEPALIVE:
     case MessageType::BYE:
@@ -405,6 +441,30 @@ std::vector<uint8_t> encode(const Message &msg, const uint8_t *key, uint32_t seq
       break;
     case MessageType::ERROR:
       put_u16(body, msg.code);
+      break;
+    case MessageType::ARM:
+      put_u8(body, msg.entry);
+      put_u8(body, msg.width);
+      put_u16(body, msg.reg);
+      put_u32(body, msg.expected);
+      put_u8(body, msg.frame.size());
+      body.insert(body.end(), msg.frame.begin(), msg.frame.end());
+      break;
+    case MessageType::DISARM:
+    case MessageType::ACK_FIRED:
+      put_u8(body, msg.entry);
+      break;
+    case MessageType::ARMED:
+      put_u8(body, msg.entry);
+      put_u8(body, msg.result);
+      put_u16(body, msg.detail);
+      break;
+    case MessageType::FIRED:
+      put_u8(body, msg.entry);
+      put_u8(body, msg.outcome);
+      put_u16(body, msg.reg);
+      put_u32(body, msg.read);
+      put_u64(body, msg.fired_us);
       break;
     case MessageType::KEEPALIVE:
     case MessageType::BYE:

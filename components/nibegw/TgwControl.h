@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "TgwDeadman.h"
 #include "TgwEngine.h"
 #include "TgwProtocol.h"
 
@@ -20,7 +21,9 @@
 //
 // With a pre-shared key, authentication comes before anything else: a sender without a
 // session only ever hears `auth_required` or `auth_failed`, and every message of an
-// authenticated session is signed with its session key, in both directions.
+// authenticated session is signed with its session key, in both directions. Only then is
+// the dead-man granted (TgwDeadman.h): a session that asks for it may arm entries, and the
+// silence it watches for is that of every session granted it.
 
 namespace esphome {
 namespace nibegw {
@@ -75,6 +78,7 @@ struct ControlSettings {
   std::string impl_version;
   std::function<void(uint8_t *, size_t)> random;               // fills a buffer with random bytes
   std::function<void(std::vector<Option> &)> platform_health;  // e.g. WIFI_RSSI, FREE_HEAP
+  DeadmanHooks deadman;  // where the dead-man keeps what is armed through a reboot, and logs
 };
 
 struct ControlStats {
@@ -96,7 +100,8 @@ class Control {
   std::vector<Datagram> handle(const uint8_t *data, size_t len, const Peer &from, uint64_t now_us);
   std::vector<Datagram> on_exchange(const Exchange &exchange);
   std::vector<Datagram> tick(uint64_t now_us);
-  // The gateway is stopping: report the queued requests as dropped.
+  // The gateway is stopping: report the queued requests as dropped. The dead-man keeps
+  // what it hasn't fired yet, for after the restart.
   std::vector<Datagram> shutdown(uint64_t now_us);
   void note_loop_gap(uint32_t gap_ms);
   void note_reply_prep(uint32_t prep_us);
@@ -105,6 +110,10 @@ class Control {
     return sessions_.size();
   }
   bool has_frame_subscribers() const;
+  // Only with a key: without one, anyone could arm writes. nullptr otherwise.
+  const Deadman *deadman() const {
+    return deadman_.get();
+  }
 
   ControlStats stats;
 
@@ -123,6 +132,7 @@ class Control {
     uint32_t event_seq{0};
     uint32_t loop_gap_max_ms{0};
     uint32_t reply_prep_max_us{0};
+    uint8_t deadman_entries{0};  // the dead-man's entries granted to it; 0 if it wasn't
   };
 
   void hello_(const Decoded &d, const uint8_t *data, size_t len, const Peer &from, uint64_t now_us,
@@ -132,7 +142,8 @@ class Control {
                      std::vector<Datagram> &out);
   Message health_(Session &session, uint64_t now_us);
   Origin origin_(const Exchange &exchange, const std::optional<RequestMeta> &replied, const Session &session) const;
-  void flush_(std::vector<Datagram> &out);
+  Message deadman_answer_(const Session &session, const Message &msg, uint64_t now_us);
+  void flush_(std::vector<Datagram> &out, uint64_t now_us);
   void send_(Session &session, const Message &msg, std::vector<Datagram> &out);
   void error_(const Peer &to, Session *session, ErrorCode code, uint32_t id, uint64_t now_us,
               std::vector<Datagram> &out, bool has_tag = false, uint16_t tag = 0, const std::string &detail = "");
@@ -145,6 +156,7 @@ class Control {
   std::map<Peer, std::unique_ptr<Session>> sessions_;
   std::map<Peer, uint64_t> last_error_us_;
   bool bus_active_{false};
+  std::unique_ptr<Deadman> deadman_;
 };
 
 }  // namespace tgw

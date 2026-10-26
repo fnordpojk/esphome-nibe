@@ -290,6 +290,20 @@ void NibeGwComponent::loop() {
   gw_->loop();
 }
 
+void NibeGwComponent::on_shutdown() {
+#ifdef USE_NIBEGW_THERMAESTRO
+  // Queued protocol requests are reported as dropped; the dead-man keeps what it hasn't
+  // fired yet, an entry under way included, for after the restart.
+  if (tgw_ && tgw_->control) {
+    send_thermaestro_(tgw_->control->shutdown(now_us_()));
+    if (tgw_->deadman_unsynced) {
+      tgw_->deadman_unsynced = false;
+      global_preferences->sync();
+    }
+  }
+#endif
+}
+
 #ifdef USE_NIBEGW_THERMAESTRO
 // --- the Thermaestro gateway protocol ------------------------------------------------------
 
@@ -341,6 +355,20 @@ void NibeGwComponent::setup_thermaestro_() {
     options.push_back(tgw::Option::u32(tgw::Tag::FREE_HEAP, heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
 #endif
   };
+  if (s.has_psk) {
+    // The dead-man saves at most every ten minutes when something changed, and when entries
+    // fire. Each save goes to flash on the next pass with no telegram under way, so a
+    // flash write never holds up a reply to the pump. A reboot before then fires an entry
+    // again, and its read shows that it is back already.
+    t.deadman_saved =
+        global_preferences->make_preference<tgw::DeadmanSaved>(fnv1_hash("nibegw_thermaestro_deadman"), true);
+    s.deadman.load = [&t](tgw::DeadmanSaved &saved) { return t.deadman_saved.load(&saved); };
+    s.deadman.save = [&t](const tgw::DeadmanSaved &saved) {
+      t.deadman_saved.save(&saved);
+      t.deadman_unsynced = true;
+    };
+    s.deadman.log = [](const std::string &text) { ESP_LOGW(TAG, "%s", text.c_str()); };
+  }
   t.control = std::make_unique<tgw::Control>(*t.engine, t.bus, s);
   ESP_LOGI(TAG, "Thermaestro gateway protocol on port %d, boot id %08x", t.port, (unsigned) s.boot_id);
 }
@@ -390,6 +418,11 @@ void NibeGwComponent::run_thermaestro_() {
   if (now - t.last_tick_us >= 100000) {
     t.last_tick_us = now;
     send_thermaestro_(t.control->tick(now));
+  }
+
+  if (t.deadman_unsynced && !gw_->messageStillOnProgress()) {
+    t.deadman_unsynced = false;
+    global_preferences->sync();
   }
 }
 

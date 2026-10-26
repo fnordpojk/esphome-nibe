@@ -27,7 +27,10 @@ uint32_t ms_since(uint64_t then_us, uint64_t now_us) {
 }  // namespace
 
 Control::Control(Engine &engine, const BusStats &bus, ControlSettings settings)
-    : engine_(engine), bus_(bus), settings_(std::move(settings)) {}
+    : engine_(engine), bus_(bus), settings_(std::move(settings)) {
+  if (settings_.has_psk)
+    deadman_ = std::make_unique<Deadman>(engine_, settings_.started_us, settings_.deadman);
+}
 
 // --- datagrams in -------------------------------------------------------------------------
 
@@ -52,6 +55,8 @@ std::vector<Datagram> Control::handle(const uint8_t *data, size_t len, const Pee
   if (session->has_key && !signature_ok_(*session, d, data, len, now_us, out))
     return out;
   session->expires_us = now_us + session->lease_us;
+  if (session->deadman_entries && deadman_)
+    deadman_->heard(now_us);
   switch (msg.type) {
     case MessageType::KEEPALIVE:
       break;
@@ -71,11 +76,16 @@ std::vector<Datagram> Control::handle(const uint8_t *data, size_t len, const Pee
       if (!engine_.cancel(session, msg.id, now_us))
         error_(from, session, ErrorCode::UNKNOWN_REQUEST, msg.id, now_us, out);
       break;
+    case MessageType::ARM:
+    case MessageType::DISARM:
+    case MessageType::ACK_FIRED:
+      send_(*session, deadman_answer_(*session, msg, now_us), out);
+      break;
     default:
       error_(from, session, ErrorCode::UNKNOWN_TYPE, msg.id, now_us, out);
       break;
   }
-  flush_(out);
+  flush_(out, now_us);
   return out;
 }
 
@@ -172,7 +182,7 @@ void Control::hello_(const Decoded &d, const uint8_t *data, size_t len, const Pe
   welcome.gw_time_us = now_us;
   auto &o = welcome.options;
   o.push_back(Option::u32(Tag::BOOT_ID, s.boot_id));
-  o.push_back(Option::u32(Tag::FEATURES, BASE_FEATURES | (s.has_psk ? feature::AUTH : 0)));
+  o.push_back(Option::u32(Tag::FEATURES, BASE_FEATURES | (s.has_psk ? feature::AUTH | feature::DEADMAN : 0)));
   if (s.has_psk) {
     uint8_t gateway_nonce[NONCE_LEN];
     if (s.random)
@@ -203,10 +213,45 @@ void Control::hello_(const Decoded &d, const uint8_t *data, size_t len, const Pe
   o.push_back(Option::u32(Tag::SUBSCRIBE, session->subscribe));
   o.push_back(Option::u16(Tag::LEASE_S, lease_s));
   o.push_back(Option::u16(Tag::HEALTH_INTERVAL_S, health_s));
+  std::vector<Message> reports;
+  const Option *asked_deadman = find_option(msg.options, Tag::DEADMAN);
+  if (asked_deadman != nullptr && session->has_key && deadman_) {
+    const auto &v = asked_deadman->value;
+    auto [seconds, entries] = deadman_->grant(v[0] | (v[1] << 8), v[2]);
+    session->deadman_entries = entries;
+    deadman_->heard(now_us);
+    Option granted = Option::u16(Tag::DEADMAN, seconds);
+    granted.value.push_back(entries);
+    granted.value.push_back(std::min<size_t>(deadman_->armed().size(), 0xFF));
+    granted.value.push_back(std::min<size_t>(deadman_->fired().size(), 0xFF));
+    o.push_back(granted);
+    reports = deadman_->reports(now_us);
+  }
 
   Session &added = *session;
   sessions_[from] = std::move(session);
   send_(added, welcome, out);
+  for (const auto &report : reports)
+    send_(added, report, out);
+}
+
+Message Control::deadman_answer_(const Session &session, const Message &msg, uint64_t now_us) {
+  Message answer;
+  if (!session.deadman_entries || !deadman_) {
+    answer.type = MessageType::ARMED;
+    answer.id = msg.id;
+    answer.entry = msg.entry;
+    answer.result = static_cast<uint8_t>(ArmResult::REFUSED);
+    answer.detail = static_cast<uint16_t>(ArmRefusal::NOT_GRANTED);
+  } else if (msg.type == MessageType::ARM) {
+    answer = deadman_->arm(msg, session.deadman_entries);
+  } else if (msg.type == MessageType::DISARM) {
+    answer = deadman_->disarm(msg.entry, msg.id);
+  } else {
+    answer = deadman_->ack_fired(msg.entry, msg.id);
+  }
+  answer.gw_time_us = now_us;
+  return answer;
 }
 
 // --- events out ---------------------------------------------------------------------------
@@ -232,13 +277,15 @@ std::vector<Datagram> Control::on_exchange(const Exchange &exchange) {
     frame.frame = exchange.data;
     send_(*session, frame, out);
   }
-  flush_(out);
+  flush_(out, exchange.t_complete_us);
   return out;
 }
 
 std::vector<Datagram> Control::tick(uint64_t now_us) {
   std::vector<Datagram> out;
   engine_.tick(now_us);
+  if (deadman_)
+    deadman_->tick(now_us);
   std::vector<Peer> expired;
   for (const auto &[addr, session] : sessions_) {
     if (session->expires_us <= now_us)
@@ -259,14 +306,16 @@ std::vector<Datagram> Control::tick(uint64_t now_us) {
   }
   for (auto it = last_error_us_.begin(); it != last_error_us_.end();)
     it = now_us - it->second < ERROR_INTERVAL_US ? std::next(it) : last_error_us_.erase(it);
-  flush_(out);
+  flush_(out, now_us);
   return out;
 }
 
 std::vector<Datagram> Control::shutdown(uint64_t now_us) {
   std::vector<Datagram> out;
+  if (deadman_)
+    deadman_->stop(now_us);
   engine_.shutdown(now_us);
-  flush_(out);
+  flush_(out, now_us);
   return out;
 }
 
@@ -363,13 +412,28 @@ Message Control::health_(Session &session, uint64_t now_us) {
   return health;
 }
 
-void Control::flush_(std::vector<Datagram> &out) {
-  for (auto &item : engine_.take_outbox()) {
-    for (auto &[addr, session] : sessions_) {
-      if (session.get() == item.client) {
-        send_(*session, item.message, out);
-        break;
+void Control::flush_(std::vector<Datagram> &out, uint64_t now_us) {
+  // The dead-man's own fates and answers may make it ask for more: until none is left.
+  for (auto items = engine_.take_outbox(); !items.empty(); items = engine_.take_outbox()) {
+    for (auto &item : items) {
+      if (deadman_ && item.client == deadman_.get()) {
+        deadman_->on_message(item.message, now_us);
+        continue;
       }
+      for (auto &[addr, session] : sessions_) {
+        if (session.get() == item.client) {
+          send_(*session, item.message, out);
+          break;
+        }
+      }
+    }
+  }
+  if (!deadman_)
+    return;
+  for (const auto &report : deadman_->just_fired(now_us)) {
+    for (auto &[addr, session] : sessions_) {
+      if (session->deadman_entries)
+        send_(*session, report, out);
     }
   }
 }

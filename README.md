@@ -195,7 +195,12 @@ ports, which stay exactly as they are:
 - every event carries the gateway's timestamp;
 - clients can subscribe to all frames or their own, and to health counters (bus silence,
   CRC errors, NAKs, queue depths, the longest loop stall);
-- with a pre-shared key, every message is authenticated.
+- with a pre-shared key, every message is authenticated;
+- with a key, a dead-man: a client arms what it changed, and once it has been silent for
+  its chosen time (15 minutes by default), the gateway reads each register and writes the
+  client's earlier value back, but only where the register still holds what the client
+  wrote. What it did is reported when the client returns. What is armed is kept in flash
+  through a reboot, saved at most every ten minutes and at once when it fires.
 
 ```yaml
 nibegw:
@@ -209,9 +214,9 @@ nibegw:
     answer_timeout: 5s
 ```
 
-The specification is [Thermaestro's gateway protocol](https://github.com/fnordpojk/thermaestro/blob/main/docs/gateway-protocol.md). The codec, request bookkeeping and sessions are platform-free
-and tested on a host against the protocol's shared byte-sequence test vectors:
-`make -C tests`.
+The specification is [Thermaestro's gateway protocol](https://github.com/fnordpojk/thermaestro/blob/main/docs/gateway-protocol.md). The codec, request bookkeeping, sessions and dead-man are
+platform-free and tested on a host against the protocol's shared byte-sequence test vectors
+and a simulated pump: `make -C tests`.
 
 ## Parsing
 

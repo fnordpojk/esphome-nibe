@@ -12,6 +12,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/log.h"
+#include "esphome/core/preferences.h"
 #include "esphome/core/version.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/network/ip_address.h"
@@ -78,6 +79,8 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
     uint64_t reply_us{0};
     uint64_t last_loop_us{0};
     uint64_t last_tick_us{0};
+    ESPPreferenceObject deadman_saved;  // what the dead-man has armed, in flash
+    bool deadman_unsynced{false};       // saved, but not yet written to flash
   };
   std::unique_ptr<Thermaestro> tgw_;
   uint32_t last_micros_{0};
@@ -190,6 +193,7 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
   void setup() override;
   void dump_config() override;
   void loop() override;
+  void on_shutdown() override;
 };
 
 }  // namespace nibegw

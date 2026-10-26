@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-// The Thermaestro gateway protocol (thermaestro-gw), registry revision 2: the datagram codec.
+// The Thermaestro gateway protocol (thermaestro-gw), registry revision 3: the datagram codec.
 //
 // One message per UDP datagram: a 20-byte header, a fixed core per message type, then
 // options as tag/length/value. An authenticated message ends with a sequence number and a
@@ -19,7 +19,7 @@ namespace nibegw {
 namespace tgw {
 
 static constexpr uint8_t VERSION_MAJOR = 0;  // 0 while the protocol is a draft
-static constexpr uint8_t REGISTRY_REVISION = 2;
+static constexpr uint8_t REGISTRY_REVISION = 3;
 static constexpr size_t MAX_DATAGRAM = 512;
 static constexpr size_t HEADER_SIZE = 20;
 static constexpr size_t MAC_LEN = 16;
@@ -36,9 +36,14 @@ enum class MessageType : uint8_t {
   SUBSCRIBE = 0x04,
   REQUEST = 0x10,
   CANCEL = 0x11,
+  ARM = 0x20,
+  DISARM = 0x21,
+  ACK_FIRED = 0x22,
   WELCOME = 0x81,
   FATE = 0x90,
   ANSWER = 0x91,
+  ARMED = 0x92,
+  FIRED = 0x93,
   FRAME = 0xA0,
   HEALTH = 0xB0,
   ERROR = 0xE0,
@@ -83,6 +88,21 @@ enum class ErrorCode : uint16_t {
 
 enum class BusState : uint8_t { SILENT = 0, ACTIVE = 1 };
 
+// The dead-man's codes (§7.10).
+enum class ArmResult : uint8_t { ARMED = 1, DISARMED, REFUSED };
+
+enum class ArmRefusal : uint16_t {
+  NONE = 0,  // not on the wire: not refused
+  NOT_GRANTED = 1,
+  NO_SUCH_ENTRY,
+  INVALID_FRAME,
+  REGISTER_MISMATCH,
+  BAD_WIDTH,
+  FIRED,  // the entry is being fired, or its outcome isn't acknowledged yet
+};
+
+enum class FiredOutcome : uint8_t { PUT_BACK = 1, REFUSED, SKIPPED, NO_ANSWER };
+
 namespace subscription {
 static constexpr uint32_t FRAMES_ALL = 1 << 0;
 static constexpr uint32_t FRAMES_OWN = 1 << 1;
@@ -97,6 +117,7 @@ static constexpr uint32_t HEALTH = 1 << 3;
 static constexpr uint32_t PRIORITY = 1 << 4;
 static constexpr uint32_t TTL = 1 << 5;
 static constexpr uint32_t AUTH = 1 << 6;
+static constexpr uint32_t DEADMAN = 1 << 7;
 }  // namespace feature
 
 namespace request_flag {
@@ -150,6 +171,7 @@ enum class Tag : uint16_t {
   REPLAYS_REJECTED = 0x0317,
   WIFI_RSSI = 0x0318,
   FREE_HEAP = 0x0319,
+  DEADMAN = 0x0801,  // u16 deadman_s, u8 entries, u8 armed, u8 fired
 };
 
 struct Option {
@@ -195,10 +217,19 @@ struct Message {
   uint8_t request_flags{0};
   uint16_t ttl_ms{0};
   uint16_t answer_timeout_ms{0};
-  // FATE
+  // FATE; `detail` also in ARMED
   uint8_t stage{0};
   uint16_t detail{0};
   uint64_t stage_time_us{0};
+  // ARM, DISARM, ACK_FIRED, ARMED and FIRED
+  uint8_t entry{0};
+  uint8_t width{0};
+  uint16_t reg{0};  // the field `register`
+  uint32_t expected{0};
+  uint8_t result{0};
+  uint8_t outcome{0};
+  uint32_t read{0};
+  uint64_t fired_us{0};
   // ANSWER
   uint8_t status{0};
   // FRAME
@@ -209,7 +240,7 @@ struct Message {
   uint64_t t_reply_us{0};
   // ERROR
   uint16_t code{0};
-  // REQUEST and ANSWER: the frame; FRAME: the exchange's bytes
+  // REQUEST, ANSWER and ARM: the frame; FRAME: the exchange's bytes
   std::vector<uint8_t> frame;
   std::vector<Option> options;
 };

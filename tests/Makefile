@@ -8,7 +8,7 @@ PYTHON ?= python3
 COMPONENT := ../components/nibegw
 SOURCES := main.cpp sha256.cpp $(wildcard test_*.cpp) \
 	$(COMPONENT)/TgwProtocol.cpp $(COMPONENT)/TgwCrypto.cpp \
-	$(wildcard $(COMPONENT)/TgwEngine.cpp) $(wildcard $(COMPONENT)/TgwControl.cpp)
+	$(COMPONENT)/TgwEngine.cpp $(COMPONENT)/TgwControl.cpp $(COMPONENT)/TgwDeadman.cpp
 
 .PHONY: test clean
 test: build/tests

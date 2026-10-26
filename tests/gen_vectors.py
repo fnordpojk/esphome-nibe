@@ -7,6 +7,7 @@ from pathlib import Path
 CORE_FIELDS = {
     "flags": "request_flags",
     "data": "frame",
+    "register": "reg",  # a keyword in C++
 }
 BYTES = {"frame", "data"}
 ERRORS = {

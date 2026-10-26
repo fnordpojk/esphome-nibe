@@ -60,8 +60,9 @@ nibegw:
   # gateway's timestamps, and clients can subscribe to frames and health.
   thermaestro:
     port: 10090
-    # Optional: with a key, every message on the control port must be signed with it.
-    # 32 random bytes as 64 hex digits.
+    # Optional: with a key, every message on the control port must be signed with it,
+    # and a client may arm the dead-man, which puts back what it changed if it goes
+    # silent. 32 random bytes as 64 hex digits.
     psk: !secret thermaestro_psk
     max_clients: 4
     answer_timeout: 5s
