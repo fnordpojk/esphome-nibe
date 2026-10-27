@@ -94,7 +94,8 @@ void Engine::submit(const void *client, const Message &request, uint64_t now_us)
   auto reason = invalid_(request.frame, key);
   if (!reason) {
     const auto &queue = queue_(key);
-    auto taken = std::count_if(queue.begin(), queue.end(), [](const QueuedRequest &q) { return q.meta.owner; });
+    auto taken =
+        std::count_if(queue.begin(), queue.end(), [client](const QueuedRequest &q) { return q.meta.owner == client; });
     if (size_t(taken) >= protocol_slots_)
       reason = DropReason::QUEUE_FULL;
   }

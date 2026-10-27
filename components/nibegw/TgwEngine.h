@@ -20,10 +20,10 @@
 // and protocol requests share them.
 //
 // - Requests go out in the order they arrived. Plain requests behave as before: at most
-//   `queue_cap` of them, and a new one drops the oldest plain entry. On top of those,
-//   `protocol_slots` entries are reserved for protocol requests, which are refused when
-//   they are taken. Neither kind pushes the other out, so a busy plain client doesn't
-//   keep protocol requests waiting for a slot.
+//   `queue_cap` of them, and a new one drops the oldest plain entry. On top of those, each
+//   protocol client has `protocol_slots` entries of its own, and its next request is
+//   refused while they are taken. Nobody pushes anybody else out, so neither a busy plain
+//   client nor another protocol client keeps a protocol client's requests waiting.
 // - Reads are paired with the pump's 0x6A answers first in, first out per register: the
 //   read requests the pump took, from every client and plain ones included, wait in the
 //   order it took them, and an answer belongs to the oldest. A read-back after a write

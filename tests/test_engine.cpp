@@ -181,14 +181,22 @@ TEST(engine_invalid_requests_are_dropped_with_a_reason) {
                            {A, 3, Stage::DROPPED, static_cast<uint16_t>(DropReason::UNKNOWN_KEY)}}));
 }
 
-TEST(engine_one_slot_is_reserved_for_protocol_requests) {
+// A client's second request waits for its first to go; another client's isn't kept out by
+// it (revision 4), so Thermaestro and the rig, say, can both read.
+TEST(engine_each_protocol_client_has_a_slot_of_its_own) {
   OneSlot f;
   f.e.submit(A, read(1), 0);
-  f.e.submit(B, read(2, 40004), 0);
+  f.e.submit(A, read(2, 40004), 0);
+  f.e.submit(B, read(3, 40005), 0);
   CHECK((fates(f.e.take_outbox()) ==
          std::vector<Fate>{{A, 1, Stage::QUEUED, 0},
-                           {B, 2, Stage::DROPPED, static_cast<uint16_t>(DropReason::QUEUE_FULL)}}));
+                           {A, 2, Stage::DROPPED, static_cast<uint16_t>(DropReason::QUEUE_FULL)},
+                           {B, 3, Stage::QUEUED, 1}}));
   CHECK(f.e.stats.drops[static_cast<size_t>(DropReason::QUEUE_FULL)] == 1);
+  CHECK((sent_order(f.e) == std::vector<uint16_t>{47134, 40005}));
+  f.e.submit(A, read(4, 40004), 1);  // its slot is free again
+  auto after = fates(f.e.take_outbox());
+  CHECK((!after.empty() && after.back() == Fate{A, 4, Stage::QUEUED, 0}));
 }
 
 TEST(engine_a_protocol_request_gets_in_when_plain_requests_fill_theirs) {
