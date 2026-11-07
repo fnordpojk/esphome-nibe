@@ -79,8 +79,9 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
     uint64_t reply_us{0};
     uint64_t last_loop_us{0};
     uint64_t last_tick_us{0};
-    ESPPreferenceObject deadman_saved;  // what the dead-man has armed, in flash
-    bool deadman_unsynced{false};       // saved, but not yet written to flash
+    ESPPreferenceObject deadman_saved;     // what the dead-man holds for each client, in flash
+    ESPPreferenceObject deadman_saved_v1;  // what it held before it knew clients (revision 4)
+    bool deadman_unsynced{false};          // saved, but not yet written to flash
   };
   std::unique_ptr<Thermaestro> tgw_;
   uint32_t last_micros_{0};
