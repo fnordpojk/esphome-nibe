@@ -60,6 +60,7 @@ constexpr Spec SPECS[] = {
     fixed(Tag::SUBSCRIBE, 4),
     fixed(Tag::LEASE_S, 2),
     fixed(Tag::HEALTH_INTERVAL_S, 2),
+    fixed(Tag::CLIENT_ID, CLIENT_ID_LEN),
     fixed(Tag::BOOT_ID, 4),
     fixed(Tag::GATEWAY_NONCE, NONCE_LEN),
     text(Tag::IMPL),

@@ -89,8 +89,8 @@ std::string differences(const tgw::Message &a, const tgw::Message &b) {
 }  // namespace
 
 TEST(the_vectors_are_all_there) {
-  CHECK(std::size(MESSAGE_VECTORS) == 27);
-  CHECK(std::size(INVALID_VECTORS) == 16);
+  CHECK(std::size(MESSAGE_VECTORS) == 29);
+  CHECK(std::size(INVALID_VECTORS) == 17);
   CHECK(std::size(SIGNED_VECTORS) == 3);
 }
 

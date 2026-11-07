@@ -356,13 +356,17 @@ void NibeGwComponent::setup_thermaestro_() {
 #endif
   };
   if (s.has_psk) {
-    // The dead-man saves at most every ten minutes when something changed, and when entries
-    // fire. Each save goes to flash on the next pass with no telegram under way, so a
-    // flash write never holds up a reply to the pump. A reboot before then fires an entry
+    // The dead-man saves an ARM at once, entries as they fire, and a disarm or an
+    // acknowledgment within ten minutes. Each save goes to flash on the next pass with no
+    // telegram under way, so a flash write never holds up a reply to the pump; an ARM is
+    // confirmed once it is written. A reboot before a firing is written fires the entry
     // again, and its read shows that it is back already.
-    t.deadman_saved =
-        global_preferences->make_preference<tgw::DeadmanSaved>(fnv1_hash("nibegw_thermaestro_deadman"), true);
+    t.deadman_saved = global_preferences->make_preference<tgw::DeadmanSaved>(
+        fnv1_hash("nibegw_thermaestro_deadman_clients"), true);
+    t.deadman_saved_v1 =
+        global_preferences->make_preference<tgw::DeadmanSavedV1>(fnv1_hash("nibegw_thermaestro_deadman"), true);
     s.deadman.load = [&t](tgw::DeadmanSaved &saved) { return t.deadman_saved.load(&saved); };
+    s.deadman.load_v1 = [&t](tgw::DeadmanSavedV1 &saved) { return t.deadman_saved_v1.load(&saved); };
     s.deadman.save = [&t](const tgw::DeadmanSaved &saved) {
       t.deadman_saved.save(&saved);
       t.deadman_unsynced = true;
@@ -422,7 +426,8 @@ void NibeGwComponent::run_thermaestro_() {
 
   if (t.deadman_unsynced && !gw_->messageStillOnProgress()) {
     t.deadman_unsynced = false;
-    global_preferences->sync();
+    bool ok = global_preferences->sync();
+    send_thermaestro_(t.control->saved(ok, now_us_()));
   }
 }
 

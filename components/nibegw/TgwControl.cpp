@@ -56,7 +56,7 @@ std::vector<Datagram> Control::handle(const uint8_t *data, size_t len, const Pee
     return out;
   session->expires_us = now_us + session->lease_us;
   if (session->deadman_entries && deadman_)
-    deadman_->heard(now_us);
+    deadman_->heard(session->client, now_us);
   switch (msg.type) {
     case MessageType::KEEPALIVE:
       break;
@@ -78,9 +78,12 @@ std::vector<Datagram> Control::handle(const uint8_t *data, size_t len, const Pee
       break;
     case MessageType::ARM:
     case MessageType::DISARM:
-    case MessageType::ACK_FIRED:
-      send_(*session, deadman_answer_(*session, msg, now_us), out);
+    case MessageType::ACK_FIRED: {
+      auto answer = deadman_answer_(*session, msg, now_us);
+      if (answer)  // an ARM's waits until its entry is kept
+        send_(*session, *answer, out);
       break;
+    }
     default:
       error_(from, session, ErrorCode::UNKNOWN_TYPE, msg.id, now_us, out);
       break;
@@ -215,17 +218,25 @@ void Control::hello_(const Decoded &d, const uint8_t *data, size_t len, const Pe
   o.push_back(Option::u16(Tag::HEALTH_INTERVAL_S, health_s));
   std::vector<Message> reports;
   const Option *asked_deadman = find_option(msg.options, Tag::DEADMAN);
-  if (asked_deadman != nullptr && session->has_key && deadman_) {
+  const Option *client_id = find_option(msg.options, Tag::CLIENT_ID);
+  if (asked_deadman != nullptr && client_id != nullptr && session->has_key && deadman_) {
     const auto &v = asked_deadman->value;
-    auto [seconds, entries] = deadman_->grant(v[0] | (v[1] << 8), v[2]);
-    session->deadman_entries = entries;
-    deadman_->heard(now_us);
-    Option granted = Option::u16(Tag::DEADMAN, seconds);
-    granted.value.push_back(entries);
-    granted.value.push_back(std::min<size_t>(deadman_->armed().size(), 0xFF));
-    granted.value.push_back(std::min<size_t>(deadman_->fired().size(), 0xFF));
-    o.push_back(granted);
-    reports = deadman_->reports(now_us);
+    ClientId client(client_id->value.begin(), client_id->value.end());
+    auto granted_as = deadman_->grant(client, v[0] | (v[1] << 8), v[2], now_us);
+    if (granted_as) {
+      auto [seconds, entries] = *granted_as;
+      session->deadman_entries = entries;
+      session->deadman_s = seconds;
+      session->client = client;
+      deadman_->heard(client, now_us);
+      auto [armed, fired] = deadman_->counts(client);
+      Option granted = Option::u16(Tag::DEADMAN, seconds);
+      granted.value.push_back(entries);
+      granted.value.push_back(std::min<size_t>(armed, 0xFF));
+      granted.value.push_back(std::min<size_t>(fired, 0xFF));
+      o.push_back(granted);
+      reports = deadman_->reports(client, now_us);
+    }
   }
 
   Session &added = *session;
@@ -235,23 +246,43 @@ void Control::hello_(const Decoded &d, const uint8_t *data, size_t len, const Pe
     send_(added, report, out);
 }
 
-Message Control::deadman_answer_(const Session &session, const Message &msg, uint64_t now_us) {
-  Message answer;
+std::optional<Message> Control::deadman_answer_(const Session &session, const Message &msg, uint64_t now_us) {
+  std::optional<Message> answer;
   if (!session.deadman_entries || !deadman_) {
-    answer.type = MessageType::ARMED;
-    answer.id = msg.id;
-    answer.entry = msg.entry;
-    answer.result = static_cast<uint8_t>(ArmResult::REFUSED);
-    answer.detail = static_cast<uint16_t>(ArmRefusal::NOT_GRANTED);
+    answer.emplace();
+    answer->type = MessageType::ARMED;
+    answer->id = msg.id;
+    answer->entry = msg.entry;
+    answer->result = static_cast<uint8_t>(ArmResult::REFUSED);
+    answer->detail = static_cast<uint16_t>(ArmRefusal::NOT_GRANTED);
   } else if (msg.type == MessageType::ARM) {
-    answer = deadman_->arm(msg, session.deadman_entries);
+    answer = deadman_->arm(session.client, msg, session.deadman_entries, session.deadman_s, asker_(session.addr),
+                           now_us);
   } else if (msg.type == MessageType::DISARM) {
-    answer = deadman_->disarm(msg.entry, msg.id);
+    answer = deadman_->disarm(session.client, msg.entry, msg.id);
   } else {
-    answer = deadman_->ack_fired(msg.entry, msg.id);
+    answer = deadman_->ack_fired(session.client, msg.entry, msg.id);
   }
-  answer.gw_time_us = now_us;
+  if (answer)
+    answer->gw_time_us = now_us;
   return answer;
+}
+
+std::vector<Datagram> Control::saved(bool ok, uint64_t now_us) {
+  std::vector<Datagram> out;
+  if (!deadman_)
+    return out;
+  for (auto &waiting : deadman_->saved(ok)) {
+    // To the session that asked, if it is still there: one that went meanwhile sends the
+    // ARM again in its next, and learns then.
+    for (auto &[addr, session] : sessions_) {
+      if (asker_(addr) == waiting.asker && session->client == waiting.client) {
+        waiting.answer.gw_time_us = now_us;
+        send_(*session, waiting.answer, out);
+      }
+    }
+  }
+  return out;
 }
 
 // --- events out ---------------------------------------------------------------------------
@@ -430,9 +461,9 @@ void Control::flush_(std::vector<Datagram> &out, uint64_t now_us) {
   }
   if (!deadman_)
     return;
-  for (const auto &report : deadman_->just_fired(now_us)) {
+  for (const auto &[client, report] : deadman_->just_fired(now_us)) {
     for (auto &[addr, session] : sessions_) {
-      if (session->deadman_entries)
+      if (session->deadman_entries && session->client == client)
         send_(*session, report, out);
     }
   }

@@ -19,13 +19,14 @@ namespace nibegw {
 namespace tgw {
 
 static constexpr uint8_t VERSION_MAJOR = 0;  // 0 while the protocol is a draft
-static constexpr uint8_t REGISTRY_REVISION = 4;
+static constexpr uint8_t REGISTRY_REVISION = 5;
 static constexpr size_t MAX_DATAGRAM = 512;
 static constexpr size_t HEADER_SIZE = 20;
 static constexpr size_t MAC_LEN = 16;
 static constexpr size_t TRAILER_SIZE = 4 + MAC_LEN;
 static constexpr size_t KEY_LEN = 32;
 static constexpr size_t NONCE_LEN = 16;
+static constexpr size_t CLIENT_ID_LEN = 16;
 static constexpr uint8_t FLAG_AUTHENTICATED = 0x80;
 static constexpr uint16_t CRITICAL = 0x8000;
 
@@ -98,7 +99,9 @@ enum class ArmRefusal : uint16_t {
   INVALID_FRAME,
   REGISTER_MISMATCH,
   BAD_WIDTH,
-  FIRED,  // the entry is being fired, or its outcome isn't acknowledged yet
+  FIRED,     // the entry is being fired, or its outcome isn't acknowledged yet
+  NO_ROOM,   // entries are held for as many other clients as there is room for
+  NOT_KEPT,  // the entry couldn't be saved, so it isn't armed
 };
 
 enum class FiredOutcome : uint8_t { PUT_BACK = 1, REFUSED, SKIPPED, NO_ANSWER };
@@ -131,6 +134,7 @@ enum class Tag : uint16_t {
   SUBSCRIBE = 0x0003,
   LEASE_S = 0x0004,
   HEALTH_INTERVAL_S = 0x0005,
+  CLIENT_ID = 0x0006,
   BOOT_ID = 0x0100,
   GATEWAY_NONCE = 0x0101,
   IMPL = 0x0102,

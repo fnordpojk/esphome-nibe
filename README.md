@@ -199,8 +199,10 @@ ports, which stay exactly as they are:
 - with a key, a dead-man: a client arms what it changed, and once it has been silent for
   its chosen time (15 minutes by default), the gateway reads each register and writes the
   client's earlier value back, but only where the register still holds what the client
-  wrote. What it did is reported when the client returns. What is armed is kept in flash
-  through a reboot, saved at most every ten minutes and at once when it fires.
+  wrote. What it did is reported when the client returns. Each client, known by the id it
+  gives when it connects, has its own entries and its own silence, so another client that
+  keeps talking doesn't keep its settings from being put back. What is armed is kept in
+  flash through a reboot: an entry is written there before the client is told it is armed.
 
 ```yaml
 nibegw:

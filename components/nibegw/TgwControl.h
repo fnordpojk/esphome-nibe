@@ -22,8 +22,8 @@
 // With a pre-shared key, authentication comes before anything else: a sender without a
 // session only ever hears `auth_required` or `auth_failed`, and every message of an
 // authenticated session is signed with its session key, in both directions. Only then is
-// the dead-man granted (TgwDeadman.h): a session that asks for it may arm entries, and the
-// silence it watches for is that of every session granted it.
+// the dead-man granted (TgwDeadman.h), and only to a session that says which client it is:
+// it may arm entries of that client's, and the silence watched for is that client's.
 
 namespace esphome {
 namespace nibegw {
@@ -103,6 +103,9 @@ class Control {
   // The gateway is stopping: report the queued requests as dropped. The dead-man keeps
   // what it hasn't fired yet, for after the restart.
   std::vector<Datagram> shutdown(uint64_t now_us);
+  // What the dead-man handed to its `save` hook is written (`ok`), or couldn't be: the ARMs
+  // waiting for it are answered.
+  std::vector<Datagram> saved(bool ok, uint64_t now_us);
   void note_loop_gap(uint32_t gap_ms);
   void note_reply_prep(uint32_t prep_us);
 
@@ -133,7 +136,13 @@ class Control {
     uint32_t loop_gap_max_ms{0};
     uint32_t reply_prep_max_us{0};
     uint8_t deadman_entries{0};  // the dead-man's entries granted to it; 0 if it wasn't
+    uint16_t deadman_s{0};       // the silence granted to it
+    ClientId client;             // the client it said it is (CLIENT_ID), whose entries it may arm
   };
+
+  static uint64_t asker_(const Peer &peer) {
+    return (uint64_t(peer.ip) << 16) | peer.port;
+  }
 
   void hello_(const Decoded &d, const uint8_t *data, size_t len, const Peer &from, uint64_t now_us,
               std::vector<Datagram> &out);
@@ -142,7 +151,7 @@ class Control {
                      std::vector<Datagram> &out);
   Message health_(Session &session, uint64_t now_us);
   Origin origin_(const Exchange &exchange, const std::optional<RequestMeta> &replied, const Session &session) const;
-  Message deadman_answer_(const Session &session, const Message &msg, uint64_t now_us);
+  std::optional<Message> deadman_answer_(const Session &session, const Message &msg, uint64_t now_us);
   void flush_(std::vector<Datagram> &out, uint64_t now_us);
   void send_(Session &session, const Message &msg, std::vector<Datagram> &out);
   void error_(const Peer &to, Session *session, ErrorCode code, uint32_t id, uint64_t now_us,

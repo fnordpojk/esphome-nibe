@@ -1,5 +1,6 @@
 // The dead-man: what a silent client changed is put back, and only where nobody else has
-// changed it since (gateway-protocol.md §15). Case for case as the Python gateway's tests.
+// changed it since (gateway-protocol.md §15). Each client has its own entries, silence and
+// reports. Case for case as the Python gateway's tests, and an ARM confirmed only once kept.
 
 #include "test.h"
 #include "../components/nibegw/TgwControl.h"
@@ -20,6 +21,13 @@ namespace {
 
 const tgw::Peer A{0x0A0200C0, 40000};  // 192.0.2.10
 const tgw::Peer B{0x0A0200C0, 40001};
+const tgw::Peer C{0x0B0200C0, 40000};  // 192.0.2.11
+const std::vector<uint8_t> THERMAESTRO(16, 0xA1);
+const std::vector<uint8_t> RIG(16, 0xB2);
+
+tgw::ClientId id(const std::vector<uint8_t> &client) {
+  return tgw::ClientId(client.begin(), client.end());
+}
 const request_key_type READ_KEY{0x20, 0x69};
 const request_key_type WRITE_KEY{0x20, 0x6B};
 constexpr uint32_t BOOT = 0xDEADBEEF;
@@ -44,6 +52,7 @@ std::vector<uint8_t> nonce() {
 // What the gateway keeps through a reboot: shared by the gateways a test restarts.
 struct Store {
   std::optional<tgw::DeadmanSaved> saved;
+  std::optional<tgw::DeadmanSavedV1> saved_v1;  // what a gateway of revision 4 kept
 };
 
 // A gateway: its queues, engine and control port, started at 0.
@@ -74,6 +83,12 @@ struct Gateway {
         saved = *store->saved;
         return true;
       };
+      s.deadman.load_v1 = [store](tgw::DeadmanSavedV1 &saved) {
+        if (!store->saved_v1)
+          return false;
+        saved = *store->saved_v1;
+        return true;
+      };
       s.deadman.save = [store](const tgw::DeadmanSaved &saved) { store->saved = saved; };
     }
     control = std::make_unique<tgw::Control>(engine, bus, s);
@@ -84,6 +99,10 @@ struct Gateway {
   }
 };
 
+// The ARMs waiting for their entries to be kept, answered once the platform has written
+// them (or, `ok` false, couldn't).
+std::vector<tgw::Message> written(Gateway &g, const tgw::Peer &to, uint64_t now_us, bool ok = true);
+
 std::vector<tgw::Message> decoded_to(const std::vector<tgw::Datagram> &out, const tgw::Peer &to) {
   std::vector<tgw::Message> found;
   for (const auto &d : out) {
@@ -91,6 +110,10 @@ std::vector<tgw::Message> decoded_to(const std::vector<tgw::Datagram> &out, cons
       found.push_back(tgw::decode(d.data.data(), d.data.size()).msg);
   }
   return found;
+}
+
+std::vector<tgw::Message> written(Gateway &g, const tgw::Peer &to, uint64_t now_us, bool ok) {
+  return decoded_to(g.control->saved(ok, now_us), to);
 }
 
 // An authenticated session, with its signing state.
@@ -102,7 +125,8 @@ struct Client {
   tgw::Message welcome;
   std::vector<tgw::Message> after_welcome;
 
-  Client(Gateway &g, const tgw::Peer &a, uint64_t now_us, std::vector<tgw::Option> options = {})
+  Client(Gateway &g, const tgw::Peer &a, uint64_t now_us, std::vector<tgw::Option> options = {},
+         const std::vector<uint8_t> &client = THERMAESTRO)
       : control(*g.control), addr(a) {
     tgw::Message hello;
     hello.type = MessageType::HELLO;
@@ -110,6 +134,8 @@ struct Client {
     hello.options.push_back({static_cast<uint16_t>(static_cast<uint16_t>(Tag::CLIENT_NONCE) | tgw::CRITICAL), nonce()});
     for (auto &o : options)
       hello.options.push_back(o);
+    if (!client.empty())
+      hello.options.push_back({static_cast<uint16_t>(Tag::CLIENT_ID), client});
     auto data = tgw::encode(hello, psk().data(), 1);
     auto replies = decoded_to(control.handle(data.data(), data.size(), addr, now_us), addr);
     CHECK(!replies.empty() && replies[0].type == MessageType::WELCOME);
@@ -261,20 +287,23 @@ bool is_fired(const tgw::Message &m, uint8_t entry, FiredOutcome outcome) {
   return m.type == MessageType::FIRED && m.entry == entry && m.outcome == static_cast<uint8_t>(outcome);
 }
 
-std::set<uint8_t> armed_numbers(const Gateway &g) {
+std::set<uint8_t> armed_numbers(const Gateway &g, const std::vector<uint8_t> &client = THERMAESTRO) {
   std::set<uint8_t> numbers;
-  for (const auto &[number, entry] : g.deadman().armed())
-    numbers.insert(number);
+  auto found = g.deadman().clients().find(id(client));
+  if (found != g.deadman().clients().end()) {
+    for (const auto &[number, entry] : found->second.armed)
+      numbers.insert(number);
+  }
   return numbers;
 }
 
-// Armed and silent for 300 s, so fired at 599 s; saved at 600 s, ten minutes after the
-// gateway started, while its read (or, with `past_read`, its write) is still out; then the
-// gateway gone without a word.
+// Armed (and kept) at 299 s and silent for 300 s, so fired at 599 s; the gateway gone
+// without a word while its read (or, with `past_read`, its write) is still out.
 std::shared_ptr<Store> firing_saved(bool past_read) {
   auto store = std::make_shared<Store>();
   Gateway g(store);
   Client(g, A, 0, {asking(300)}).send(arm(), 299 * S);
+  written(g, A, 299 * S);
   Pump pump{g, {{OFFSET, SET}}};
   g.control->tick(599 * S);  // the read is queued
   if (past_read)
@@ -433,11 +462,12 @@ TEST(deadman_kept_through_a_restart_of_the_gateway) {
   auto store = std::make_shared<Store>();
   {
     Gateway g(store);
-    Client(g, A, 0, {asking()}).send(arm(), 1 * S);
-    g.control->tick(2 * S);
-    CHECK(!store->saved);  // saved now and then, not on every change
-    g.control->tick(tgw::Deadman::SAVE_EVERY_US + 2 * S);
-    CHECK(store->saved && store->saved->armed_count == 1 && store->saved->armed[0].reg == OFFSET);
+    Client client(g, A, 0, {asking()});
+    CHECK(client.send(arm(), 1 * S).empty());  // not confirmed until it is kept
+    // Handed over at once: the gateway may reboot right after, the client gone.
+    CHECK(store->saved && store->saved->client_count == 1 && store->saved->clients[0].armed_count == 1 &&
+          store->saved->clients[0].armed[0].reg == OFFSET && store->saved->clients[0].owned == 1);
+    CHECK(is_answer(written(g, A, 1 * S + 10), ArmResult::ARMED));
   }
   {
     Gateway restarted(store);  // the silence counts from the restart
@@ -462,9 +492,11 @@ TEST(deadman_stopping_mid_firing_keeps_the_entry_armed) {
   auto store = std::make_shared<Store>();
   Gateway g(store);
   Client(g, A, 0, {asking()}).send(arm(), 1 * S);
+  written(g, A, 1 * S);
   g.control->tick(901 * S);  // its read is queued
   g.control->shutdown(902 * S);
-  CHECK(store->saved && store->saved->armed_count == 1 && store->saved->armed[0].number == 0);
+  CHECK(store->saved && store->saved->client_count == 1 && store->saved->clients[0].armed_count == 1 &&
+        store->saved->clients[0].armed[0].number == 0);
 }
 
 TEST(deadman_a_restart_during_a_firing_fires_it_again) {
@@ -511,4 +543,193 @@ TEST(deadman_a_4_byte_entry_compares_both_words) {
   CHECK(back.after_welcome.size() == 1);
   if (back.after_welcome.size() == 1)
     CHECK(is_fired(back.after_welcome[0], 0, FiredOutcome::SKIPPED) && back.after_welcome[0].read == 0x00050002);
+}
+
+// --- each client its own ------------------------------------------------------------------
+
+TEST(deadman_granted_only_to_a_client_that_says_who_it_is) {
+  Gateway g;
+  Client anonymous(g, A, 0, {asking()}, {});
+  CHECK(deadman_option(anonymous.welcome).empty());
+  CHECK(is_answer(anonymous.send(arm(), 1 * S), ArmResult::REFUSED, ArmRefusal::NOT_GRANTED));
+}
+
+TEST(deadman_two_clients_entries_of_one_number_are_each_their_own) {
+  Gateway g;
+  Client thermaestro(g, A, 0, {asking()});
+  Client rig(g, B, 0, {asking()}, RIG);
+  thermaestro.send(arm(0), 1 * S);
+  rig.send(arm(0, 47376, 0xFF6A, 0x0096), 2 * S);
+  rig.send(simple(MessageType::DISARM, 0, 30), 3 * S);  // the rig puts its own back
+  Pump pump{g, {{OFFSET, SET}, {47376, 0xFF6A}}};
+  pump.run(904 * S, 910 * S);
+  CHECK((pump.writes == Writes{{OFFSET, FOUND}}));  // Thermaestro's entry 0: not replaced, not dropped
+}
+
+TEST(deadman_another_client_talking_doesnt_keep_a_silent_ones_entries_from_firing) {
+  Gateway g;
+  Client(g, A, 0, {asking()}).send(arm(0), 1 * S);
+  Client rig(g, B, 0, {asking()}, RIG);
+  rig.send(arm(0, 47376, 0xFF6A, 0x0096), 1 * S);
+  Pump pump{g, {{OFFSET, SET}, {47376, 0xFF6A}}};
+  for (uint64_t t = 60; t < 1200; t += 60) {
+    rig.send(simple(MessageType::KEEPALIVE), t * S);
+    pump.run(t * S, t * S + 10 * S);
+  }
+  CHECK((pump.writes == Writes{{OFFSET, FOUND}}));  // Thermaestro's, after its own silence; not the rig's
+}
+
+TEST(deadman_a_client_back_from_another_address_is_the_same_client) {
+  // A restart of Thermaestro binds another port: its entries are still its own.
+  Gateway g;
+  Client(g, A, 0, {asking()}).send(arm(0), 1 * S);
+  Pump pump{g, {{OFFSET, SET}}};
+  Client back(g, C, 600 * S, {asking()});
+  CHECK(test::hex(deadman_option(back.welcome)) == test::hex({0x84, 0x03, 16, 1, 0}));  // its entry, held for it
+  pump.run(901 * S, 1400 * S, 60 * S);
+  CHECK(pump.writes.empty());  // its silence started again at 600 s
+  Client again(g, C, 1401 * S, {asking()});  // its lease ended meanwhile
+  CHECK(is_answer(again.send(simple(MessageType::DISARM, 0, 31), 1401 * S), ArmResult::DISARMED));
+  pump.run(1402 * S, 4000 * S, 60 * S);
+  CHECK(pump.writes.empty());
+}
+
+TEST(deadman_a_report_goes_to_its_own_client_only) {
+  Gateway g;
+  Client(g, A, 0, {asking(300)}).send(arm(0), 1 * S);
+  Pump pump{g, {{OFFSET, SET}}};
+  Client rig(g, B, 0, {asking()}, RIG);
+  for (uint64_t t = 60; t < 400; t += 60) {
+    rig.send(simple(MessageType::KEEPALIVE), t * S);
+    pump.run(t * S, t * S + 10 * S);
+  }
+  CHECK((pump.writes == Writes{{OFFSET, FOUND}}));
+  for (const auto &m : decoded_to(pump.sent, B))
+    CHECK(m.type != MessageType::FIRED);
+  rig.send(simple(MessageType::ACK_FIRED, 0, 32), 401 * S);  // the rig's entry 0 has no report: no effect
+  Client back(g, A, 402 * S, {asking(300)});
+  CHECK(back.after_welcome.size() == 1);
+  if (back.after_welcome.size() == 1)
+    CHECK(is_fired(back.after_welcome[0], 0, FiredOutcome::PUT_BACK));
+  Client rig_again(g, B, 403 * S, {asking()}, RIG);
+  CHECK(rig_again.after_welcome.empty());
+}
+
+namespace {
+
+std::shared_ptr<Store> saved_by_revision_4() {
+  auto store = std::make_shared<Store>();
+  tgw::DeadmanSavedV1 v1{};
+  v1.magic = tgw::DeadmanSavedV1::MAGIC;
+  v1.silence_s = 300;
+  v1.armed_count = 1;
+  auto &a = v1.armed[0];
+  a.number = 3;
+  a.width = 2;
+  a.reg = OFFSET;
+  a.expected = SET;
+  auto frame = write_request(OFFSET, FOUND);
+  std::memcpy(a.frame, frame.data(), frame.size());
+  store->saved_v1 = v1;
+  return store;
+}
+
+}  // namespace
+
+TEST(deadman_what_revision_4_kept_is_the_first_granted_clients) {
+  auto store = saved_by_revision_4();
+  Gateway g(store);
+  Client first(g, A, 0, {asking(300)});
+  CHECK(test::hex(deadman_option(first.welcome)) == test::hex({0x2C, 0x01, 16, 1, 0}));
+  CHECK(is_answer(first.send(simple(MessageType::DISARM, 3, 33), 1 * S), ArmResult::DISARMED));
+  Pump pump{g, {{OFFSET, SET}}};
+  pump.run(2 * S, 2000 * S, 60 * S);
+  CHECK(pump.writes.empty());
+}
+
+TEST(deadman_what_revision_4_kept_fires_if_nobody_comes) {
+  auto store = saved_by_revision_4();
+  Gateway g(store);
+  Pump pump{g, {{OFFSET, SET}}};
+  pump.run(0, 310 * S);
+  CHECK((pump.writes == Writes{{OFFSET, FOUND}}));
+  CHECK(store->saved && store->saved->client_count == 1 && store->saved->clients[0].owned == 0);
+  Client first(g, A, 400 * S, {asking(300)});
+  CHECK(first.after_welcome.size() == 1);
+  if (first.after_welcome.size() == 1)
+    CHECK(is_fired(first.after_welcome[0], 3, FiredOutcome::PUT_BACK));
+}
+
+TEST(deadman_no_dead_man_for_a_client_past_those_held_for) {
+  Gateway g;
+  for (uint8_t n = 0; n < tgw::Deadman::MAX_CLIENTS; n++) {
+    Client held(g, A, n * S, {asking()}, std::vector<uint8_t>(16, n));
+    held.send(arm(0), n * S + 1);
+    held.send(simple(MessageType::BYE), n * S + 2);
+  }
+  Client late(g, A, 10 * S, {asking()}, std::vector<uint8_t>(16, 0xEE));
+  CHECK(deadman_option(late.welcome).empty());
+  Client again(g, B, 11 * S, {asking()}, std::vector<uint8_t>(16, 0));
+  CHECK(!deadman_option(again.welcome).empty());  // one it holds for
+}
+
+TEST(deadman_an_arm_past_the_clients_held_for_is_refused) {
+  // Granted while there was room, and another took it meanwhile.
+  Gateway g;
+  for (uint8_t n = 0; size_t(n) + 1 < tgw::Deadman::MAX_CLIENTS; n++) {
+    Client held(g, A, n * S, {asking()}, std::vector<uint8_t>(16, n));
+    held.send(arm(0), n * S + 1);
+    held.send(simple(MessageType::BYE), n * S + 2);
+  }
+  Client first(g, A, 10 * S, {asking()}, std::vector<uint8_t>(16, 0xE0));
+  Client second(g, B, 10 * S, {asking()}, std::vector<uint8_t>(16, 0xE1));
+  CHECK(is_answer(first.send(arm(0), 11 * S), ArmResult::ARMED));
+  CHECK(is_answer(second.send(arm(0), 12 * S), ArmResult::REFUSED, ArmRefusal::NO_ROOM));
+}
+
+TEST(deadman_an_arm_is_confirmed_once_it_is_kept) {
+  auto store = std::make_shared<Store>();
+  Gateway g(store);
+  Client client(g, A, 0, {asking()});
+  CHECK(client.send(arm(0), 1 * S).empty());
+  CHECK(client.send(arm(1, 47376, 0xFF6A, 0x0096), 1 * S).empty());
+  auto answers = written(g, A, 1 * S + 20000);
+  CHECK(answers.size() == 2);
+  if (answers.size() == 2) {
+    CHECK(answers[0].type == MessageType::ARMED && answers[0].entry == 0 && answers[0].id == 10);
+    CHECK(answers[1].type == MessageType::ARMED && answers[1].entry == 1 && answers[1].id == 11);
+    CHECK(answers[1].result == static_cast<uint8_t>(ArmResult::ARMED) && answers[1].gw_time_us == 1 * S + 20000);
+  }
+  CHECK(written(g, A, 2 * S).empty());  // each answered once
+}
+
+TEST(deadman_an_arm_that_cant_be_kept_is_refused_and_not_armed) {
+  auto store = std::make_shared<Store>();
+  Gateway g(store);
+  Client client(g, A, 0, {asking()});
+  client.send(arm(0), 1 * S);
+  CHECK(is_answer(written(g, A, 1 * S + 20000, false), ArmResult::REFUSED, ArmRefusal::NOT_KEPT));
+  CHECK(armed_numbers(g).empty());
+  Pump pump{g, {{OFFSET, SET}}};
+  pump.run(901 * S, 910 * S);
+  CHECK(pump.writes.empty());  // not armed: the client doesn't make the change
+}
+
+TEST(deadman_a_report_nobody_acknowledges_is_dropped_in_time) {
+  Gateway g;
+  Client(g, A, 0, {asking(300)}, RIG).send(arm(0), 1 * S);
+  Pump pump{g, {{OFFSET, SET}}};
+  pump.run(302 * S, 310 * S);
+  CHECK((pump.writes == Writes{{OFFSET, FOUND}}));
+  const auto &clients = g.deadman().clients();
+  CHECK(clients.count(id(RIG)) == 1);
+  if (clients.count(id(RIG)) == 0)
+    return;
+  uint64_t kept_us = clients.at(id(RIG)).fired.at(0).kept_us;
+  g.control->tick(kept_us + tgw::Deadman::REPORT_KEPT_US - S);
+  CHECK(g.deadman().clients().count(id(RIG)) == 1);
+  g.control->tick(kept_us + tgw::Deadman::REPORT_KEPT_US);
+  CHECK(g.deadman().clients().count(id(RIG)) == 0);  // nothing left for it: forgotten
+  Client back(g, A, kept_us + tgw::Deadman::REPORT_KEPT_US + S, {asking(300)}, RIG);
+  CHECK(back.after_welcome.empty());
 }
