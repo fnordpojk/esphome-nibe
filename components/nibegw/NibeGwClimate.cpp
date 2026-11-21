@@ -4,10 +4,26 @@
 #include "NibeGwComponent.h"
 #include "NibeGw.h"
 
+#include <cstdio>
+#include <string>
+#include <vector>
+
 namespace esphome {
 namespace nibegw {
 
 static const char *TAG = "nibegw";
+
+// Bytes as "AA.BB" for the log. Our own, as ESPHome's string-returning format_hex_pretty()
+// was removed in its newer releases.
+static std::string hex_text(const std::vector<uint8_t> &data) {
+  std::string out;
+  char byte[4];
+  for (size_t i = 0; i < data.size(); i++) {
+    std::snprintf(byte, sizeof(byte), i == 0 ? "%02X" : ".%02X", data[i]);
+    out += byte;
+  }
+  return out;
+}
 
 const int int16_invalid = -0x8000;
 const int int8_invalid = -0x80;
@@ -153,13 +169,13 @@ void NibeGwClimate::publish_current_temperature() {
 void NibeGwClimate::publish_current_temperature(float value) {
   auto data = set_s16_decimal(value, 0.1, -7);
   data_[RMU_WRITE_INDEX_TEMPERATURE] = data;
-  ESP_LOGI(TAG, "Publishing to rmu: 0x%x temp: %f -> %s", address_, value, format_hex_pretty(data).c_str());
+  ESP_LOGI(TAG, "Publishing to rmu: 0x%x temp: %f -> %s", address_, value, hex_text(data).c_str());
 }
 
 void NibeGwClimate::publish_set_point(float value) {
   auto data = set_s16_decimal(value, 0.1, 0);
   data_[RMU_WRITE_INDEX_SETPOINT_SX(this->index_)] = data;
-  ESP_LOGI(TAG, "Publishing to rmu: 0x%x target: %f -> %s", address_, value, format_hex_pretty(data).c_str());
+  ESP_LOGI(TAG, "Publishing to rmu: 0x%x target: %f -> %s", address_, value, hex_text(data).c_str());
 }
 
 void NibeGwClimate::dump_config() {
@@ -222,7 +238,7 @@ void NibeGwClimate::setup() {
     }
 
     ESP_LOGD(TAG, "Responding to rmu: 0x%x index: 0x%x data: %s", address_, it->first,
-             format_hex_pretty(it->second).c_str());
+             hex_text(it->second).c_str());
 
     std::vector<uint8_t> payload;
     payload.push_back(it->first);
