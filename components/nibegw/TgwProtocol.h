@@ -18,6 +18,11 @@ namespace esphome {
 namespace nibegw {
 namespace tgw {
 
+// Microseconds from `then_us` to `now_us`, or 0 where `then_us` is later: a time read after
+// `now_us` was taken may have been kept meanwhile. Unsigned, the difference would wrap to
+// centuries, and every silence or timeout measured with it would be over at once.
+inline uint64_t since_us(uint64_t now_us, uint64_t then_us) { return now_us > then_us ? now_us - then_us : 0; }
+
 static constexpr uint8_t VERSION_MAJOR = 0;  // 0 while the protocol is a draft
 static constexpr uint8_t REGISTRY_REVISION = 5;
 static constexpr size_t MAX_DATAGRAM = 512;

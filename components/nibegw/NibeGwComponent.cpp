@@ -419,9 +419,12 @@ void NibeGwComponent::run_thermaestro_() {
     }
   }
 
-  if (now - t.last_tick_us >= 100000) {
-    t.last_tick_us = now;
-    send_thermaestro_(t.control->tick(now));
+  // Read again: the datagrams above were handled at later times, which the tick must not
+  // come before.
+  uint64_t tick_us = now_us_();
+  if (tgw::since_us(tick_us, t.last_tick_us) >= 100000) {
+    t.last_tick_us = tick_us;
+    send_thermaestro_(t.control->tick(tick_us));
   }
 
   if (t.deadman_unsynced && !gw_->messageStillOnProgress()) {

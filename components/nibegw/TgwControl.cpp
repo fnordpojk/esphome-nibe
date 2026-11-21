@@ -324,7 +324,7 @@ std::vector<Datagram> Control::tick(uint64_t now_us) {
   }
   for (const auto &addr : expired)
     end_(addr);
-  bool active = bus_.last_byte_us != 0 && now_us - bus_.last_byte_us < SILENT_AFTER_US;
+  bool active = bus_.last_byte_us != 0 && since_us(now_us, bus_.last_byte_us) < SILENT_AFTER_US;
   bool changed = active != bus_active_;
   bus_active_ = active;
   for (auto &[addr, session] : sessions_) {
@@ -336,7 +336,7 @@ std::vector<Datagram> Control::tick(uint64_t now_us) {
     }
   }
   for (auto it = last_error_us_.begin(); it != last_error_us_.end();)
-    it = now_us - it->second < ERROR_INTERVAL_US ? std::next(it) : last_error_us_.erase(it);
+    it = since_us(now_us, it->second) < ERROR_INTERVAL_US ? std::next(it) : last_error_us_.erase(it);
   flush_(out, now_us);
   return out;
 }
@@ -487,7 +487,7 @@ void Control::send_(Session &session, const Message &msg, std::vector<Datagram> 
 void Control::error_(const Peer &to, Session *session, ErrorCode code, uint32_t id, uint64_t now_us,
                      std::vector<Datagram> &out, bool has_tag, uint16_t tag, const std::string &detail) {
   auto last = last_error_us_.find(to);
-  if (last != last_error_us_.end() && now_us - last->second < ERROR_INTERVAL_US)
+  if (last != last_error_us_.end() && since_us(now_us, last->second) < ERROR_INTERVAL_US)
     return;
   last_error_us_[to] = now_us;
   Message error;

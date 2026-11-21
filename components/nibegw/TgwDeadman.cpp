@@ -291,7 +291,7 @@ Message Deadman::armed_answer_(uint8_t entry, ArmResult result, uint32_t id, Arm
 
 void Deadman::tick(uint64_t now_us) {
   for (auto &[client, known] : clients_) {
-    if (firing_.count(client) == 0 && !known.armed.empty() && now_us - known.heard_us >= known.silence_us) {
+    if (firing_.count(client) == 0 && !known.armed.empty() && since_us(now_us, known.heard_us) >= known.silence_us) {
       log_("dead-man: a client silent for " + std::to_string(known.silence_us / 1000000) + " s, putting " +
            std::to_string(known.armed.size()) + " back");
       firing_.insert(client);
@@ -302,7 +302,7 @@ void Deadman::tick(uint64_t now_us) {
   if (!current_)
     next_(now_us);
   forget_(now_us);
-  if (dirty_ && now_us - saved_us_ >= SAVE_EVERY_US)
+  if (dirty_ && since_us(now_us, saved_us_) >= SAVE_EVERY_US)
     save(now_us);
 }
 
@@ -311,7 +311,7 @@ void Deadman::tick(uint64_t now_us) {
 void Deadman::forget_(uint64_t now_us) {
   for (auto &[client, known] : clients_) {
     for (auto it = known.fired.begin(); it != known.fired.end();) {
-      if (now_us - it->second.kept_us >= REPORT_KEPT_US) {
+      if (since_us(now_us, it->second.kept_us) >= REPORT_KEPT_US) {
         log_("dead-man: entry " + std::to_string(it->first) + "'s report was never acknowledged");
         it = known.fired.erase(it);
         dirty_ = true;
@@ -327,7 +327,7 @@ void Deadman::forget_(uint64_t now_us) {
       busy = busy || queued.first == client;
     for (const auto &waiting : awaiting_)
       busy = busy || waiting.client == client;
-    if (!known.holds() && !busy && now_us - known.heard_us >= known.silence_us)
+    if (!known.holds() && !busy && since_us(now_us, known.heard_us) >= known.silence_us)
       it = clients_.erase(it);
     else
       ++it;

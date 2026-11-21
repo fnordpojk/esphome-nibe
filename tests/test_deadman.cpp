@@ -733,3 +733,52 @@ TEST(deadman_a_report_nobody_acknowledges_is_dropped_in_time) {
   Client back(g, A, kept_us + tgw::Deadman::REPORT_KEPT_US + S, {asking(300)}, RIG);
   CHECK(back.after_welcome.empty());
 }
+
+// The gateway's loop reads the time once, handles the datagrams that came in at times read
+// after it, and may then tick with the time it read first. A client heard after that time
+// isn't silent, nor is a report kept after it old.
+
+TEST(deadman_a_client_heard_after_the_ticks_time_isnt_silent) {
+  Gateway g;
+  Client client(g, A, 0, {asking()});
+  client.send(arm(), 600 * S + 5000);
+  Pump pump{g, {{OFFSET, SET}}};
+  g.control->tick(600 * S);
+  pump.cycle(600 * S);
+  pump.run(601 * S, 620 * S);
+  CHECK(pump.writes.empty());
+  CHECK(armed_numbers(g) == std::set<uint8_t>{0});
+}
+
+TEST(deadman_a_client_holding_nothing_heard_after_the_ticks_time_isnt_forgotten) {
+  Gateway g;
+  Client client(g, A, 0, {asking()});
+  client.send(simple(MessageType::KEEPALIVE), 600 * S + 5000);
+  g.control->tick(600 * S);
+  CHECK(g.deadman().clients().count(id(THERMAESTRO)) == 1);
+}
+
+TEST(deadman_a_report_kept_after_the_ticks_time_isnt_dropped) {
+  Gateway g;
+  Client(g, A, 0, {asking(300)}, RIG).send(arm(0), 1 * S);
+  Pump pump{g, {{OFFSET, SET}}};
+  pump.run(302 * S, 310 * S);
+  CHECK((pump.writes == Writes{{OFFSET, FOUND}}));
+  const auto &clients = g.deadman().clients();
+  if (clients.count(id(RIG)) == 0 || clients.at(id(RIG)).fired.count(0) == 0) {
+    CHECK(false);
+    return;
+  }
+  uint64_t kept_us = clients.at(id(RIG)).fired.at(0).kept_us;
+  g.control->tick(kept_us - 5000);
+  auto rig = g.deadman().clients().find(id(RIG));
+  CHECK(rig != g.deadman().clients().end() && rig->second.fired.count(0) == 1);
+}
+
+TEST(since_us_is_never_negative) {
+  CHECK(tgw::since_us(10, 4) == 6);
+  CHECK(tgw::since_us(4, 4) == 0);
+  CHECK(tgw::since_us(4, 10) == 0);
+  CHECK(tgw::since_us(0, UINT64_MAX) == 0);
+  CHECK(tgw::since_us(UINT64_MAX, 0) == UINT64_MAX);
+}
